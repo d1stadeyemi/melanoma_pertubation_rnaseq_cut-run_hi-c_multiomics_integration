@@ -14,7 +14,7 @@
 # OPTIONAL:
 #   --outdir      Output directory (default: current working directory)
 #   --sep         Column delimiter: "tab" or "," or ";"  (default: tab)
-#   --padj        Adjusted p-value threshold (default: 0.01)
+#   --padj        Adjusted p-value threshold (default: 0.05)
 #   --lfc         log2 fold-change threshold (default: 2.0)
 #   --me3         H3K27me3 |Bottom-Parent| threshold for Fig4 (default: 0.05)
 # =============================================================================
@@ -204,9 +204,9 @@ def classify_compartment(row):
 
 
 def broad_category(cat):
-    if cat in ["BothtoA", "BtoA"]:  return "Switch to A"
+    if cat in ["BothtoA", "BtoA"]:   return "Both to A"
     if cat in ["TowardA"]:           return "Shift to A"
-    if cat in ["BothtoB", "AtoB"]:  return "Switch to B"
+    if cat in ["BothtoB", "AtoB"]:   return "Both to B"
     if cat in ["TowardB"]:           return "Shift to B"
     return None
 
@@ -223,13 +223,13 @@ COMP_COLORS = {
 }
 
 BROAD_COLORS = {
-    "Switch to A": "#C0392B",
+    "Both to A": "#C0392B",
     "Shift to A":  "#F1948A",
-    "Switch to B": "#1A5276",
+    "Both to B": "#1A5276",
     "Shift to B":  "#85C1E9",
 }
 
-CAT_ORDER = ["Switch to A", "Shift to A", "Shift to B", "Switch to B"]
+CAT_ORDER = ["Both to A", "Shift to A", "Shift to B", "Both to B"]
 
 
 # =============================================================================
@@ -481,7 +481,7 @@ def plot_fig4(df, args, outdir):
         return data[data["_rank"] <= n].drop(columns="_rank").reset_index(drop=True)
 
     # Up to 5 per category initially
-    top_df = _top_n(subset, 5)
+    top_df = _top_n(subset, 7)
 
     # If total < 10, relax per-category cap to reach at least 10
     if len(top_df) < 10:
@@ -497,7 +497,7 @@ def plot_fig4(df, args, outdir):
     top_df = (top_df
               .sort_values(["_cat_order", "Bottom-Parent"], ascending=[True, True])
               .drop_duplicates(subset="gene_name")
-              .head(20))
+              )
 
     print(f"[INFO] Final genes selected: {len(top_df)}")
     print(top_df[["gene_name", "_broad_comp", "Bottom-Parent",
