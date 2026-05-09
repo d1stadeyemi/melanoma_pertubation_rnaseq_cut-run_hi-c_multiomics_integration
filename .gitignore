@@ -1,30 +1,17 @@
 # Raw data — never push to GitHub
-raw/data/*.bai
-raw/data/*.bam
-raw/data/*.bigwig
-raw/data/*.bw
-raw/data/*.fastq
-raw/data/*.fastq.gz
-raw/data/*.fq.gz
-raw/data/*.xlsx
-raw/files/*.csv
-raw/files/*.json
-raw/files/*.tsv
-raw/files/*.txt
-raw/files/*.xls
-raw/files/*.xlsx
+raw/data/*
+raw/files/*
+
+# But keep the placeholder
+!raw/data/.gitkeep
+!raw/files/.gitkeep
 
 # Large outputs
-outputs/figures/*.png
-outputs/figures/*.svg
-outputs/figures/*.pdf
-outputs/figures/*.jpg
-outputs/figures/*.jpeg
-outputs/tables/*.csv
-outputs/tables/*.tsv
-outputs/tables/*.xlsx
-outputs/tables/*.xls
-outputs/tables/*.json
+outputs/figures/*
+outputs/tables/*
+
+!outputs/figures/.gitkeep
+!outputs/tables/.gitkeep
 
 # Python
 .venv/
