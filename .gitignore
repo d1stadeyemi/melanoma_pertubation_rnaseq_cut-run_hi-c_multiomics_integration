@@ -1,0 +1,40 @@
+# Raw data — never push to GitHub
+raw_files/
+*.bam
+*.bai
+*.bigwig
+*.bw
+*.fastq
+*.fastq.gz
+*.fq.gz
+*.xlsx
+
+# Large outputs
+outputs/figures/*.png
+outputs/figures/*.svg
+outputs/figures/*.pdf
+outputs/figures/*.jpg
+outputs/figures/*.jpeg
+outputs/tables/*.csv
+outputs/tables/*.tsv
+outputs/tables/*.xlsx
+outputs/tables/*.xls
+outputs/tables/*.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Conda
+myenv/
+
+# Snakemake
+.snakemake/
+
+# OS
+.DS_Store
+
+# Test ipynb
+test.ipynb
