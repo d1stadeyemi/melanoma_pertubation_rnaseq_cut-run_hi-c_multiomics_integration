@@ -1,13 +1,18 @@
 # Raw data — never push to GitHub
-raw_files/
-*.bam
-*.bai
-*.bigwig
-*.bw
-*.fastq
-*.fastq.gz
-*.fq.gz
-*.xlsx
+raw/data/*.bai
+raw/data/*.bam
+raw/data/*.bigwig
+raw/data/*.bw
+raw/data/*.fastq
+raw/data/*.fastq.gz
+raw/data/*.fq.gz
+raw/data/*.xlsx
+raw/files/*.csv
+raw/files/*.json
+raw/files/*.tsv
+raw/files/*.txt
+raw/files/*.xls
+raw/files/*.xlsx
 
 # Large outputs
 outputs/figures/*.png
