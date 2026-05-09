@@ -516,7 +516,7 @@ def plot_fig4(df, args, outdir):
     dot_sizes = 40 + (lp_vals - lp_min) / (lp_max - lp_min + 1e-9) * 160
 
     # ── Figure ────────────────────────────────────────────────────────────────
-    fig_h = max(5, n_genes * 0.54)
+    fig_h = max(5, n_genes * 0.4)
     fig, ax = plt.subplots(figsize=(9.5, fig_h))
 
     # Horizontal bars
