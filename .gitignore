@@ -33,6 +33,9 @@ myenv/
 # Snakemake
 .snakemake/
 
+# Vscode
+.vscode/
+
 # OS
 .DS_Store
 
