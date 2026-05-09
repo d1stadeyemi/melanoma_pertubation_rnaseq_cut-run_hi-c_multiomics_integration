@@ -2,7 +2,6 @@ import pandas as pd
 import argparse
 import os 
 
-
 def clean_hg19(hg19):
     hg19 = pd.read_excel(hg19)
     df = pd.DataFrame()
