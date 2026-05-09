@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import argparse
-import os
+import os 
 
 def clean_hic_pc1(input_file):
     hic = pd.read_excel(input_file, header=1)
