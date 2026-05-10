@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/lustre/isaac24/scratch/majagbe/envs/epp604_env/bin/python3
+
 # =============================================================================
 # Multi-Omics Integration: Publication-Quality Figures
 # A375 Melanoma — CUT&RUN + RNA-seq + Hi-C Integration
@@ -77,7 +78,7 @@ def parse_args():
         help=(
             "Path to merged data table (tab-delimited by default). "
             "Required columns: gene_name, padj, log2FC, baseMean, "
-            "Bottom-Parent, P->B10_Switch_Orig, P->B10_Shift_Orig, "
+            "b10_minus_parental_h3k27me3, P->B10_Switch_Orig, P->B10_Shift_Orig, "
             "P->B10_Both_original."
         )
     )
@@ -132,7 +133,7 @@ def load_data(input_file, sep="tab"):
         sys.exit(f"[ERROR] Could not read {input_file}: {e}")
 
     required = [
-        "gene_name", "padj", "log2FC", "baseMean", "Bottom-Parent",
+        "gene_name", "padj", "log2FC", "baseMean", "b10_minus_parental_h3k27me3",
         "P->B10_Switch_Orig", "P->B10_Shift_Orig", "P->B10_Both_original"
     ]
     missing = [c for c in required if c not in df.columns]
@@ -142,7 +143,7 @@ def load_data(input_file, sep="tab"):
             f"Found columns: {df.columns.tolist()}"
         )
 
-    for col in ["padj", "log2FC", "baseMean", "Bottom-Parent"]:
+    for col in ["padj", "log2FC", "baseMean", "b10_minus_parental_h3k27me3"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     print(f"[INFO] Loaded {len(df):,} rows x {len(df.columns)} columns")
@@ -313,7 +314,7 @@ def plot_fig2(df, args, outdir):
     sig_df = df[sig].copy()
     y_all  = -np.log10(df["padj"].replace(0, 1e-300))
 
-    signal_vals = sig_df["Bottom-Parent"].values
+    signal_vals = sig_df["b10_minus_parental_h3k27me3"].values
     vmax = max(abs(np.nanmin(signal_vals)), abs(np.nanmax(signal_vals)))
     vmin = -vmax
     cmap = plt.cm.RdBu_r
@@ -338,13 +339,13 @@ def plot_fig2(df, args, outdir):
     cbar.ax.axhline(0, color="black", lw=1.2)
 
     q_labels = [
-        (sig & (df["log2FC"] >  args.lfc) & (df["Bottom-Parent"] >  args.me3),
+        (sig & (df["log2FC"] >  args.lfc) & (df["b10_minus_parental_h3k27me3"] >  args.me3),
          "#D62728", "Up + H3K27me3 gain"),
-        (sig & (df["log2FC"] >  args.lfc) & (df["Bottom-Parent"] < -args.me3),
+        (sig & (df["log2FC"] >  args.lfc) & (df["b10_minus_parental_h3k27me3"] < -args.me3),
          "#1F77B4", "Up + H3K27me3 loss"),
-        (sig & (df["log2FC"] < -args.lfc) & (df["Bottom-Parent"] >  args.me3),
+        (sig & (df["log2FC"] < -args.lfc) & (df["b10_minus_parental_h3k27me3"] >  args.me3),
          "#E6550D", "Down + H3K27me3 gain"),
-        (sig & (df["log2FC"] < -args.lfc) & (df["Bottom-Parent"] < -args.me3),
+        (sig & (df["log2FC"] < -args.lfc) & (df["b10_minus_parental_h3k27me3"] < -args.me3),
          "#9ECAE1", "Down + H3K27me3 loss"),
     ]
     for j, (mask, color, label) in enumerate(q_labels):
@@ -454,7 +455,7 @@ def plot_fig4(df, args, outdir):
 
     sig      = get_sig_mask(df, args.padj, args.lfc)
     has_comp = df["_broad_comp"].notna()
-    has_me3  = df["Bottom-Parent"].abs() > args.me3
+    has_me3  = df["b10_minus_parental_h3k27me3"].abs() > args.me3
 
     subset = df[sig & has_comp & has_me3].copy()
     print(f"[INFO] Genes passing all filters "
@@ -467,7 +468,7 @@ def plot_fig4(df, args, outdir):
 
     # ── Composite importance score ─────────────────────────────────────────────
     subset["_lp"]    = -np.log10(subset["padj"].replace(0, 1e-300))
-    subset["_score"] = subset["Bottom-Parent"].abs() * subset["_lp"]
+    subset["_score"] = subset["b10_minus_parental_h3k27me3"].abs() * subset["_lp"]
 
     def _top_n(data, n):
         """
@@ -495,17 +496,17 @@ def plot_fig4(df, args, outdir):
         {c: i for i, c in enumerate(CAT_ORDER)}
     )
     top_df = (top_df
-              .sort_values(["_cat_order", "Bottom-Parent"], ascending=[True, True])
+              .sort_values(["_cat_order", "b10_minus_parental_h3k27me3"], ascending=[True, True])
               .drop_duplicates(subset="gene_name")
               )
 
     print(f"[INFO] Final genes selected: {len(top_df)}")
-    print(top_df[["gene_name", "_broad_comp", "Bottom-Parent",
-                  "log2FC", "padj"]].to_string(index=False))
+    print(top_df[["gene_name", "_broad_comp", "b10_minus_parental_h3k27me3"],
+                  "log2FC", "padj"].to_string(index=False))
 
     n_genes  = len(top_df)
     y_pos    = np.arange(n_genes)
-    signals  = top_df["Bottom-Parent"].values
+    signals  = top_df["b10_minus_parental_h3k27me3"].values
     colors   = [BROAD_COLORS[c] for c in top_df["_broad_comp"]]
     gene_lbl = top_df["gene_name"].values
     lfc_vals = top_df["log2FC"].values
