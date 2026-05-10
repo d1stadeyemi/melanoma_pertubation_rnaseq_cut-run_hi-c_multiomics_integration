@@ -501,8 +501,8 @@ def plot_fig4(df, args, outdir):
               )
 
     print(f"[INFO] Final genes selected: {len(top_df)}")
-    print(top_df[["gene_name", "_broad_comp", "b10_minus_parental_h3k27me3"],
-                  "log2FC", "padj"].to_string(index=False))
+    print(top_df[["gene_name", "_broad_comp", "b10_minus_parental_h3k27me3",
+                  "log2FC", "padj"]].to_string(index=False))
 
     n_genes  = len(top_df)
     y_pos    = np.arange(n_genes)
