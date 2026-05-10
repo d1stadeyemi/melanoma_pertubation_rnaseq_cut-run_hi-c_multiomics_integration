@@ -1,6 +1,7 @@
 # Raw data — never push to GitHub
 raw/data/*
 raw/files/*
+raw/tempo/
 
 # But keep the placeholder
 !raw/data/.gitkeep
