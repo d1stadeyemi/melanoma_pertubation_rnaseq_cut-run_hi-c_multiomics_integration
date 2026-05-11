@@ -154,9 +154,8 @@ def classify_coupling(df, args):
 
 def plot_upset(df, outdir):
     """
-    Fig 2a: UpSet plot — standard for multi-set intersection visualization
-    in Nature/Science papers. Shows what fraction of changes are trimodal
-    vs modality-specific.
+    Fig 2a: UpSet plot — standard for multi-set intersection visualization.
+    Shows what fraction of changes are trimodal vs modality-specific.
     """
     memberships = []
     for _, row in df.iterrows():
@@ -194,26 +193,26 @@ def plot_spearman(df, pc1_col, outdir):
     Fig 2b: Pairwise Spearman correlations between the three modality
     delta values. Each point is a gene. Rho and p annotated.
     This tests whether the three layers are mechanistically linked
-    or can dissociate — the central mechanistic question of Q2.
+    or can dissociate.
     """
     pairs = []
     if pc1_col:
         pairs = [
             ("b10_minus_parental_h3k27me3", "log2FC",
              "\u0394H3K27me3 (B10 \u2212 Parental)",
-             "log\u2082FC (RNA-seq)", "#1A5276"),
+             r"$\log_2 FC$ (RNA-seq)", "#1A5276"),
             ("b10_minus_parental_h3k27me3", pc1_col,
              "\u0394H3K27me3 (B10 \u2212 Parental)",
              "\u0394PC1 (Hi-C)", "#C0392B"),
             (pc1_col, "log2FC",
              "\u0394PC1 (Hi-C)",
-             "log\u2082FC (RNA-seq)", "#27AE60"),
+             r"$\log_2 FC$ (RNA-seq)", "#27AE60"),
         ]
     elif "log2FC" in df.columns:
         pairs = [
             ("b10_minus_parental_h3k27me3", "log2FC",
              "\u0394H3K27me3 (B10 \u2212 Parental)",
-             "log\u2082FC (RNA-seq)", "#1A5276"),
+             r"$\log_2 FC$ (RNA-seq)", "#1A5276"),
         ]
 
     if not pairs:
@@ -247,7 +246,7 @@ def plot_spearman(df, pc1_col, outdir):
         ax.plot(xl, np.polyval(z, xl),
                 color="black", lw=1.2, ls="--", alpha=0.7)
 
-        p_str = f"{p:.2e}" if p >= 1e-4 else "< 10\u207b\u2074"
+        p_str = f"{p:.2e}" if p >= 1e-4 else r"$< 10^{-4}$"
         ax.text(0.05, 0.95,
                 f"\u03c1 = {rho:.3f}\np = {p_str}",
                 transform=ax.transAxes, fontsize=9,
