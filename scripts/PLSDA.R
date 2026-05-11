@@ -1,4 +1,4 @@
-#!/lustre/isaac24/scratch/majagbe/envs/epp604_env/bin/Rscript
+#!/usr/bin/env Rscript
 # =============================================================================
 # Q1: PLS-DA — mixOmics (Nature/Science standard for supervised multiomics)
 # Reference: Rohart et al., PLOS Computational Biology 2017

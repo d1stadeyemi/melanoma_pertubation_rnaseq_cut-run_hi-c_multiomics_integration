@@ -307,7 +307,7 @@ def plot_fig1(df, args, outdir):
         mpatches.Patch(fc="#1A5276", ec="none", label=f"Downregulated (n={down.sum()})"),
         mpatches.Patch(fc="#d0d0d0", ec="none", label="Not significant"),
     ]
-    ax.legend(handles=legend_elements, frameon=False, fontsize=9,
+    ax.legend(handles=legend_elements, frameon=False, fontsize=11,
               loc="upper center", bbox_to_anchor=(0.5, 0.92))
 
     ax.set_xlabel("log$_{2}$ Fold Change (Bottom10 / Parental)", labelpad=6)
@@ -661,7 +661,7 @@ def plot_fig4(df, args, outdir):
 
     ax.set_xlabel("H3K27me3 Signal Change (Bottom10 \u2212 Parental)", labelpad=8)
     ax.set_title(
-        "Top DEGs with H3K27me3 Change and Compartment Reorganization\n"
+        "DEGs with H3K27me3 Change and Compartment Reorganization\n"
         "A375 Melanoma: Parental \u2192 Bottom10",
         fontweight="bold", pad=18
     )
