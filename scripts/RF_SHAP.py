@@ -400,7 +400,7 @@ def run_rf_shap(df, mark_names, outdir):
     order     = np.argsort(mean_shap)[::-1]
 
     fig_shap, ax_shap = plt.subplots(figsize=(5.5, 4))
-    top_idx   = int(order[0])   # convert to plain Python int to avoid array comparison
+    top_idx   = int(np.argmax(mean_shap))   # directly get index of highest SHAP value
     bar_colors = ["#C0392B" if int(i) == top_idx else "#1A5276" for i in order]
     ax_shap.barh(
         [mark_names[i] for i in order[::-1]],

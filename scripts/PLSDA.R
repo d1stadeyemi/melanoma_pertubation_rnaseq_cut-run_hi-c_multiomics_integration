@@ -105,9 +105,14 @@ cat("[INFO] Saved Fig1_PLSDA_performance.pdf\n")
 # ── VIP scores ────────────────────────────────────────────────────────────────
 # VIP > 1 = significant contribution (Chong & Jun 2005 — standard threshold)
 vip_mat <- vip(plsda_res)
-vip_df  <- as.data.frame(vip_mat) %>%
-  rownames_to_column("mark") %>%
-  rename(VIP_comp1 = `comp 1`) %>%
+vip_df <- as.data.frame(vip_mat) %>%
+  rownames_to_column("mark")
+
+# Detect first component column regardless of naming convention
+# mixOmics uses "comp 1" or "comp1" depending on version
+comp1_col <- names(vip_df)[2]   # always the first component column after mark
+vip_df <- vip_df %>%
+  rename(VIP_comp1 = all_of(comp1_col)) %>%
   arrange(desc(VIP_comp1)) %>%
   mutate(significant = VIP_comp1 > 1)
 
