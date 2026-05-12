@@ -3,15 +3,15 @@
 Q2: Trimodal coupling — H3K27me3, RNA, and Hi-C compartment changes
 
 Usage:
-    python scripts/Q2_trimodal_coupling.py \
+    python scripts/trimodal_coupling.py \
         outputs/tables/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
-        --outdir outputs/figures/Q2_coupling
+        --outdir outputs/figures/
 
 Outputs:
     Fig2a_upset_cooccurrence.pdf/png
     Fig2b_spearman_correlations.pdf/png
     Fig2c_concordance_bar.pdf/png
-    Q2_coupling_classified.txt
+    Trimodal_coupling_classified.txt
 """
 
 import argparse
@@ -51,10 +51,10 @@ plt.rcParams.update({
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Q2: Trimodal coupling analysis"
+        description="Trimodal coupling analysis"
     )
     p.add_argument("merged_file", help="merged multi-omics table")
-    p.add_argument("--outdir",       default="outputs/figures/Q2_coupling")
+    p.add_argument("--outdir",       default="outputs/figures/trimodal_coupling")
     p.add_argument("--lfc_thresh",   type=float, default=2.0,
                    help="log2FC threshold for RNA change (default 2.0)")
     p.add_argument("--me3_thresh",   type=float, default=0.05,
@@ -371,7 +371,7 @@ def main():
     df, pc1_col = classify_coupling(df, args)
 
     # Save coupling classification
-    out_path = os.path.join(args.outdir, "Q2_coupling_classified.txt")
+    out_path = os.path.join(args.outdir, "Trimodal_coupling_classified.txt")
     df.to_csv(out_path, sep="\t", index=False)
     print(f"[INFO] Saved -> {out_path}")
 
@@ -384,7 +384,7 @@ def main():
     print("[INFO] Generating Fig 2c: Concordance bar chart...")
     plot_concordance_bar(df, args.outdir)
 
-    print(f"\n[INFO] Q2 complete -> {os.path.abspath(args.outdir)}")
+    print(f"\n[INFO] Process complete -> {os.path.abspath(args.outdir)}")
 
 
 if __name__ == "__main__":

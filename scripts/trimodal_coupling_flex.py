@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Flexible trimodal (or multi-modal) coupling analysis
+Q2: Flexible trimodal (or multi-modal) coupling analysis
 
 Hi-C compartment is always included by default.
 You must specify at least one of --rna or --marks.
@@ -92,7 +92,7 @@ def parse_args():
         epilog=__doc__
     )
     p.add_argument("merged_file", help="merged multi-omics table")
-    p.add_argument("--outdir",      default="outputs/figures/Q2_coupling")
+    p.add_argument("--outdir",      default="outputs/figures/trimodal_coupling")
 
     # ── Modality selection ────────────────────────────────────────────────────
     p.add_argument("--rna",    action="store_true",
@@ -253,139 +253,128 @@ def make_coupling_label(row, modalities):
 # ══════════════════════════════════════════════════════════════════════════════
 def plot_upset(df, modalities, outdir):
     """
-    Manual UpSet plot. Avoids upsetplot library color/nan crashes.
-    Works for any number of modalities.
+    UpSet plot using the upsetplot library
     """
-    mod_names = list(modalities.keys())
-    n_mods    = len(mod_names)
+    try:
+        from upsetplot import UpSet, from_memberships
+    except ImportError:
+        print("[WARN] `upsetplot` not installed. "
+              "Install with `pip install upsetplot` to enable Fig 2a. Skipping.")
+        return
 
-    # Build all 2^n intersection counts
-    intersections = {}
-    for size in range(n_mods + 1):
-        for combo in combinations(range(n_mods), size):
-            label = tuple(sorted([mod_names[i] for i in combo]))
-            mask  = pd.Series([True] * len(df), index=df.index)
-            for j, info in enumerate(modalities.values()):
-                col = info["changed_col"]
-                if j in combo:
-                    mask = mask & df[col].fillna(False)
-                else:
-                    mask = mask & ~df[col].fillna(False)
-            intersections[label] = int(mask.sum())
+    # ── 1. Build per-gene membership lists ───────────────────────────────────
+    # For each gene, record which modalities it is "changed" in.
+    mod_names    = list(modalities.keys())
+    changed_cols = [modalities[m]["changed_col"] for m in mod_names]
 
-    # Sort by count descending
-    sorted_items = sorted(intersections.items(),
-                          key=lambda x: x[1], reverse=True)
-    labels = [item[0] for item in sorted_items]
-    counts = [item[1] for item in sorted_items]
-    n_bars = len(labels)
+    # NaN-safe: missing values are treated as "not changed".
+    changed_bool = df[changed_cols].fillna(False).astype(bool)
 
-    all_mods_set = frozenset(mod_names)
+    # List-of-lists: for each row, which modalities are True.
+    memberships = [
+        [name for name, flag in zip(mod_names, row) if flag]
+        for row in changed_bool.itertuples(index=False, name=None)
+    ]
 
-    # Determine if a bar has ALL modalities (highlight red)
-    def is_all(label):
-        return set(label) == all_mods_set
-
-    # Figure layout
-    fig = plt.figure(figsize=(max(10, n_bars * 0.9), 6 + n_mods * 0.4))
-    ax_bar = fig.add_axes([0.22, 0.45, 0.74, 0.48])
-    ax_dot = fig.add_axes([0.22, 0.05, 0.74, 0.38])
-    ax_set = fig.add_axes([0.02, 0.05, 0.18, 0.38])
-
-    x_pos = np.arange(n_bars)
-
-    # ── Bar chart ──────────────────────────────────────────────────────────────
-    bar_colors = ["#C0392B" if is_all(lab) else "#222222" for lab in labels]
-    bars = ax_bar.bar(x_pos, counts, color=bar_colors,
-                      edgecolor="none", width=0.6)
-    for bar, val in zip(bars, counts):
-        if val > 0:
-            ax_bar.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + max(counts) * 0.01,
-                        f"{val:,}", ha="center", va="bottom", fontsize=7.5,
-                        fontweight="bold")
-    ax_bar.set_xlim(-0.5, n_bars - 0.5)
-    ax_bar.set_xticks([])
-    ax_bar.set_ylabel("Intersection size", fontsize=11)
-    ax_bar.spines["top"].set_visible(False)
-    ax_bar.spines["right"].set_visible(False)
-    if is_all(labels[0]):
-        ax_bar.add_patch(mpatches.Patch(
-            fc="#C0392B", ec="none",
-            label=f"All {n_mods} co-changed (n={counts[0]:,})"
-        ))
-        ax_bar.legend(frameon=True, fontsize=9, loc="upper right")
-
-    # ── Dot matrix ────────────────────────────────────────────────────────────
-    y_positions = {name: i for i, name in enumerate(mod_names)}
-
-    ax_dot.set_xlim(-0.5, n_bars - 0.5)
-    ax_dot.set_ylim(-0.5, n_mods - 0.5)
-    ax_dot.set_xticks([])
-    ax_dot.set_yticks(range(n_mods))
-    ax_dot.set_yticklabels(mod_names, fontsize=10)
-    ax_dot.spines["top"].set_visible(False)
-    ax_dot.spines["right"].set_visible(False)
-    ax_dot.spines["bottom"].set_visible(False)
-
-    for i in range(n_mods):
-        if i % 2 == 0:
-            ax_dot.axhspan(i - 0.5, i + 0.5, color="#F5F5F5", zorder=0)
-
-    for xi, lab in enumerate(labels):
-        active     = set(lab)
-        all_active = is_all(lab)
-        dot_color  = "#C0392B" if all_active else "black"
-        active_ys  = sorted([y_positions[m] for m in active])
-
-        for mod in mod_names:
-            yi = y_positions[mod]
-            if mod in active:
-                ax_dot.scatter(xi, yi, s=110, color=dot_color,
-                               zorder=3, linewidths=0)
-            else:
-                ax_dot.scatter(xi, yi, s=110, color="#DDDDDD",
-                               zorder=2, linewidths=0)
-
-        if len(active_ys) > 1:
-            ax_dot.plot([xi, xi],
-                        [min(active_ys), max(active_ys)],
-                        color=dot_color, lw=2.5, zorder=2)
-
-    # ── Set size bars ──────────────────────────────────────────────────────────
-    set_sizes = {
-        name: int(df[info["changed_col"]].fillna(False).sum())
-        for name, info in modalities.items()
-    }
-    max_ss = max(set_sizes.values()) if set_sizes else 1
-
-    ax_set.barh(
-        [y_positions[m] for m in mod_names],
-        [set_sizes[m] for m in mod_names],
-        color=[modalities[m]["color"] for m in mod_names],
-        height=0.5
+    # ── 2. Convert to the Series format UpSet expects ────────────────────────
+    # `from_memberships(memberships, data=ones)` produces ONE Series row per
+    # gene. That means the resulting MultiIndex has duplicate combinations,
+    # which trips UpSet's default subset_size="auto" with:
+    #   ValueError: subset_size="auto" cannot be used for a Series with
+    #               non-unique groups.
+    # The fix is twofold:
+    #   (a) pass subset_size="sum" to UpSet so it groups duplicate index rows
+    #       by summing their values (== counting genes per intersection), OR
+    #   (b) pre-aggregate here with groupby().sum().
+    # We use option (b) — it's cleaner, makes the data smaller, and avoids
+    # any quirks with how different upsetplot versions parse "sum".
+    upset_data = from_memberships(
+        memberships,
+        data=np.ones(len(memberships), dtype=int),
     )
-    for mod in mod_names:
-        yi = y_positions[mod]
-        ax_set.text(set_sizes[mod] + max_ss * 0.02,
-                    yi, f"{set_sizes[mod]:,}",
-                    va="center", fontsize=9)
+    # Collapse the per-gene rows into one row per unique intersection.
+    # The MultiIndex of booleans is preserved; values become counts.
+    upset_data = upset_data.groupby(level=list(range(len(mod_names)))).sum()
 
-    ax_set.set_ylim(-0.5, n_mods - 0.5)
-    ax_set.invert_xaxis()
-    ax_set.set_xlabel("Set size", fontsize=10)
-    ax_set.set_yticks([])
-    ax_set.spines["top"].set_visible(False)
-    ax_set.spines["right"].set_visible(False)
+    # ── 3. Configure the UpSet object ────────────────────────────────────────
+    # show_counts='%d'              -> draws integer labels just outside bars,
+    #                                  both intersection bars (top) and totals
+    #                                  bars (side). Library handles offset so
+    #                                  they don't intersect the bars.
+    # facecolor='#222222'           -> dark grey bars (matches reference).
+    # element_size=42               -> per-column width of the dot matrix.
+    # intersection_plot_elements=8  -> taller top bar panel so big-count
+    #                                  labels don't run into the title.
+    # totals_plot_elements=4        -> wider side totals panel so side-count
+    #                                  labels have room to the right of bars.
+    upset = UpSet(
+        upset_data,
+        sort_by='cardinality',
+        sort_categories_by='cardinality',
+        show_counts='%d',
+        facecolor='#222222',
+        element_size=42,
+        intersection_plot_elements=8,
+        totals_plot_elements=4,
+    )
 
+    # ── 4. Highlight the "all modalities co-changed" subset ──────────────────
+    n_mods = len(mod_names)
+    upset.style_subsets(
+        present=mod_names,        # the bar where every modality is True
+        facecolor='#C0392B',      # red highlight
+        edgecolor='#C0392B',      # makes the legend swatch render reliably
+        label=f"All {n_mods} co-changed",
+    )
+
+    # ── 5. Draw onto a sized figure ──────────────────────────────────────────
+    # Width scales gently with modality count so 2 vs 5 modalities both look
+    # balanced. Height grows with category rows.
+    fig = plt.figure(figsize=(max(11, 1.2 * n_mods + 8), 6.5 + 0.4 * n_mods))
+    axes = upset.plot(fig=fig)   # returns dict of internal axes
+
+    # ── 6. Polish the axes ───────────────────────────────────────────────────
+    # 6a. Top bar panel y-label.
+    axes['intersections'].set_ylabel("Intersection size", fontsize=11)
+
+    # 6b. Side totals panel: widen the data limit so the numeric labels
+    #     drawn by show_counts don't get clipped at the edge. The totals
+    #     axis is normally inverted (large values extend leftward), so we
+    #     extend whichever side represents the larger magnitude.
+    totals_ax = axes['totals']
+    totals_ax.set_xlabel("Set size", fontsize=10)
+    xmin, xmax = totals_ax.get_xlim()
+    pad = 0.20 * abs(xmin - xmax)
+    if xmin > xmax:           # inverted (typical)
+        totals_ax.set_xlim(xmin + pad, xmax)
+    else:                     # non-inverted (defensive)
+        totals_ax.set_xlim(xmin, xmax + pad)
+
+    # 6c. Category tick labels on the matrix axis: push them away from the
+    #     dots so "Hi-C Compartment" / "Transcription" have breathing room.
+    matrix_ax = axes['matrix']
+    for tick in matrix_ax.get_yticklabels():
+        tick.set_horizontalalignment('right')
+        tick.set_fontsize(10.5)
+    matrix_ax.tick_params(axis='y', pad=8)
+
+    # 6d. Format the legend created by style_subsets.
+    leg = axes['intersections'].get_legend()
+    if leg is not None:
+        leg.set_frame_on(True)
+        leg.set_bbox_to_anchor((1.0, 1.0))
+        leg.set_loc('upper right')
+
+    # ── 7. Title ─────────────────────────────────────────────────────────────
     mod_str = " + ".join(mod_names)
     fig.suptitle(
         f"Co-occurrence of Multi-omics Changes\n"
         f"Parental \u2192 Bottom10  ({mod_str})",
-        fontweight="bold", fontsize=12, y=1.01
+        fontweight="bold", fontsize=12, y=1.02,
     )
-    save_fig(fig, outdir, "Fig2a_upset_cooccurrence")
 
+    # ── 8. Save (PDF + PNG, 600 dpi, via the existing helper) ────────────────
+    save_fig(fig, outdir, "Fig2a_upset_cooccurrence")    
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOT B: Pairwise Spearman correlations
@@ -408,17 +397,18 @@ def plot_spearman(df, modalities, outdir):
         print("[WARN] No valid column pairs for Spearman. Skipping.")
         return
 
+    # Auto grid: square-ish layout. 1->1x1, 2->1x2, 3->1x3, 4->2x2,
+    # 5->2x3, 6->2x3, 7-9->3x3, etc. Extra cells are hidden.
     n_pairs = len(pairs)
-    # Best grid layout: max 3 columns, compute rows needed
-    n_cols = min(n_pairs, 3)
-    n_rows = int(np.ceil(n_pairs / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols,
-                              figsize=(4.5 * n_cols, 4.2 * n_rows),
+    ncols   = int(np.ceil(np.sqrt(n_pairs)))
+    nrows   = int(np.ceil(n_pairs / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                              figsize=(4.5 * ncols, 4.3 * nrows),
                               squeeze=False)
     axes = axes.flatten()
-    # Hide any unused panels
-    for idx in range(n_pairs, len(axes)):
-        axes[idx].set_visible(False)
+    # Hide unused cells in non-balanced grids (e.g. 5 panels in a 2x3 grid)
+    for ax in axes[n_pairs:]:
+        ax.set_visible(False)
 
     for ax, ((xname, xcol, xcolor), (yname, ycol, ycolor)) in zip(axes, pairs):
         sub = df[[xcol, ycol]].dropna()
@@ -498,80 +488,60 @@ def plot_concordance_bar(df, modalities, outdir):
 
     comp_dirs = ["B\u2192A", "A\u2192B", "Stable"]
     x         = np.arange(len(comp_dirs))
-    n_others  = len(other_mods)
-    width     = 0.7 / n_others
-    offsets   = np.linspace(-(n_others - 1) * width / 2,
-                             (n_others - 1) * width / 2,
-                             n_others)
+    fig, ax = plt.subplots(figsize=(max(7, len(other_mods) * 2.5), 5))
 
-    fig, ax = plt.subplots(figsize=(max(7, (n_others + 1) * 2.5), 5))
+    # Add an extra series: "All concordant" = genes concordant in EVERY
+    # non-Hi-C modality simultaneously. Renamed from "Both concordant" so
+    # it scales to >2 modalities.
+    n_series = len(other_mods) + 1                # +1 for "All concordant"
+    width    = 0.75 / n_series
+    offsets  = np.linspace(-(n_series - 1) * width / 2,
+                            (n_series - 1) * width / 2,
+                            n_series)
 
-    # Track per-gene concordance flags for each modality — needed for "all concordant" bar
-    concordance_flags = {}
-
-    for (mod_name, info), offset in zip(other_mods.items(), offsets):
+    # Helper: per-modality concordance boolean (sign-aware, repressive-aware)
+    def concordance_mask(sub, info, gd):
         delta_col = info["delta_col"]
-        color     = info["color"]
-        flags_per_dir = {}
+        if not delta_col or delta_col not in df.columns:
+            return pd.Series([False] * len(sub), index=sub.index)
+        vals       = pd.to_numeric(sub[delta_col], errors="coerce")
+        repressive = any(k in delta_col.lower() for k in ["me3", "h3k9", "unc"])
+        if gd == "B\u2192A":
+            return (vals < 0) if repressive else (vals > 0)
+        if gd == "A\u2192B":
+            return (vals > 0) if repressive else (vals < 0)
+        return pd.Series([False] * len(sub), index=sub.index)
 
+    # Individual modality bars
+    for (mod_name, info), offset in zip(other_mods.items(), offsets[:-1]):
+        color = info["color"]
         fracs = []
         for gd in comp_dirs:
             sub = df[df["comp_dir"] == gd]
             n   = len(sub)
-            if n == 0 or not delta_col or delta_col not in df.columns:
-                fracs.append(0)
-                flags_per_dir[gd] = pd.Series(
-                    [False] * len(sub), index=sub.index)
-                continue
-
-            vals = pd.to_numeric(sub[delta_col], errors="coerce")
-            repressive = any(k in delta_col.lower()
-                             for k in ["me3", "h3k9", "unc"])
-
-            if gd == "B\u2192A":
-                concordant = vals < 0 if repressive else vals > 0
-            elif gd == "A\u2192B":
-                concordant = vals > 0 if repressive else vals < 0
-            else:
-                concordant = pd.Series([False] * len(sub), index=sub.index)
-
-            concordant = concordant.fillna(False)
-            flags_per_dir[gd] = concordant
-            fracs.append(concordant.sum() / n * 100)
-
-        concordance_flags[mod_name] = flags_per_dir
-
+            if n == 0:
+                fracs.append(0); continue
+            mask = concordance_mask(sub, info, gd).fillna(False)
+            fracs.append(mask.sum() / n * 100)
         ax.bar(x + offset, fracs, width=width * 0.9,
-               color=color, label=mod_name,
+               color=color, label=f"Concordant {mod_name}",
                edgecolor="white", linewidth=0.4)
 
-    # "All concordant" bar — gene must be concordant in ALL other modalities
-    all_offset = offsets[-1] + width
-    all_fracs  = []
+    # "All concordant" bar: gene must be concordant in EVERY non-Hi-C modality
+    fracs_all = []
     for gd in comp_dirs:
         sub = df[df["comp_dir"] == gd]
         n   = len(sub)
-        if n == 0 or not concordance_flags:
-            all_fracs.append(0)
-            continue
-        # Intersect flags across all modalities for this direction
+        if n == 0:
+            fracs_all.append(0); continue
         combined = pd.Series([True] * len(sub), index=sub.index)
-        for flags_per_dir in concordance_flags.values():
-            if gd in flags_per_dir:
-                combined = combined & flags_per_dir[gd]
-        all_fracs.append(combined.sum() / n * 100)
-
-    ax.bar(x + all_offset, all_fracs, width=width * 0.9,
-           color="#2C3E50", label="All concordant",
+        for info in other_mods.values():
+            combined &= concordance_mask(sub, info, gd).fillna(False)
+        fracs_all.append(combined.sum() / n * 100)
+    ax.bar(x + offsets[-1], fracs_all, width=width * 0.9,
+           color="#0A0B2C", label=f"All {len(other_mods)} concordant",
            edgecolor="white", linewidth=0.4)
 
-    # Widen x limits to accommodate the extra bar
-    n_others  = len(other_mods)
-    width     = 0.7 / (n_others + 1)
-    offsets   = np.linspace(-(n_others) * width / 2,
-                             (n_others) * width / 2,
-                             n_others + 1)
-    
     # Sample size annotations
     for xi, gd in zip(x, comp_dirs):
         n = (df["comp_dir"] == gd).sum()
