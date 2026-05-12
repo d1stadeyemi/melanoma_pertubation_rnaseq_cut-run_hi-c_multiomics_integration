@@ -88,8 +88,9 @@ perf_res <- perf(
   progressBar = FALSE
 )
 
-# Save performance plot
-pdf(file.path(outdir, "Fig1_PLSDA_performance.pdf"), width = 6, height = 5)
+# Save performance plot as PDF and PNG
+pdf(file.path(outdir, "Fig1_PLSDA_performance.pdf"), width = 7, height = 6)
+par(mar = c(5, 5, 5, 3))
 plot(perf_res,
      col             = color.mixo(1:3),
      sd              = TRUE,
@@ -101,6 +102,20 @@ title(
 )
 dev.off()
 cat("[INFO] Saved Fig1_PLSDA_performance.pdf\n")
+
+png(file.path(outdir, "Fig1_PLSDA_performance.png"), width = 7, height = 6, units = "in", res = 600)
+par(mar = c(5, 5, 5, 3))
+plot(perf_res,
+     col             = color.mixo(1:3),
+     sd              = TRUE,
+     legend.position = "horizontal")
+title(
+  main     = "PLS-DA Classification Error Rate\n(5-fold CV, 50 repeats)",
+  cex.main = 1.1,
+  font.main = 2
+)
+dev.off()
+cat("[INFO] Saved Fig1_PLSDA_performance.png\n")
 
 # ── VIP scores ────────────────────────────────────────────────────────────────
 # VIP > 1 = significant contribution (Chong & Jun 2005 — standard threshold)
@@ -146,11 +161,16 @@ p_vip <- ggplot(vip_df,
   theme(legend.position = "bottom")
 
 ggsave(file.path(outdir, "Fig1_PLSDA_VIP.pdf"),
-       p_vip, width = 5.5, height = 4.5, dpi = 600)
+       p_vip, width = 6, height = 5, dpi = 600)
 cat("[INFO] Saved Fig1_PLSDA_VIP.pdf\n")
 
+ggsave(file.path(outdir, "Fig1_PLSDA_VIP.png"),
+       p_vip, width = 6, height = 5, dpi = 600)
+cat("[INFO] Saved Fig1_PLSDA_VIP.png\n")
+
 # ── Score plot (gene/sample separation in PLS-DA space) ──────────────────────
-pdf(file.path(outdir, "Fig1_PLSDA_scores.pdf"), width = 6, height = 5.5)
+pdf(file.path(outdir, "Fig1_PLSDA_scores.pdf"), width = 7.5, height = 6.5)
+par(mar = c(5.5, 5.5, 5.5, 3))
 plotIndiv(
   plsda_res,
   comp          = c(1, 2),
@@ -167,8 +187,27 @@ plotIndiv(
 dev.off()
 cat("[INFO] Saved Fig1_PLSDA_scores.pdf\n")
 
+png(file.path(outdir, "Fig1_PLSDA_scores.png"), width = 7.5, height = 6.5, units = "in", res = 600)
+par(mar = c(5.5, 5.5, 5.5, 3))
+plotIndiv(
+  plsda_res,
+  comp          = c(1, 2),
+  group         = Y,
+  ind.names     = FALSE,
+  ellipse       = TRUE,        # 95% confidence ellipses — standard
+  legend        = TRUE,
+  title         = "PLS-DA: Parental Marks vs Compartment Switch",
+  col.per.group = unname(switch_colors[levels(Y)]),
+  pch           = 19,
+  alpha         = 0.6,
+  point.lwd     = 0.3
+)
+dev.off()
+cat("[INFO] Saved Fig1_PLSDA_scores.png\n")
+
 # ── Loading plot ───────────────────────────────────────────────────────────────
-pdf(file.path(outdir, "Fig1_PLSDA_loadings.pdf"), width = 5.5, height = 4.5)
+pdf(file.path(outdir, "Fig1_PLSDA_loadings.pdf"), width = 6.5, height = 5.5)
+par(mar = c(5, 5, 5, 3))
 plotLoadings(
   plsda_res,
   comp    = 1,
@@ -178,5 +217,17 @@ plotLoadings(
 )
 dev.off()
 cat("[INFO] Saved Fig1_PLSDA_loadings.pdf\n")
+
+png(file.path(outdir, "Fig1_PLSDA_loadings.png"), width = 6.5, height = 5.5, units = "in", res = 600)
+par(mar = c(5, 5, 5, 3))
+plotLoadings(
+  plsda_res,
+  comp    = 1,
+  method  = "mean",
+  contrib = "max",
+  title   = "PLS-DA Loadings: Component 1"
+)
+dev.off()
+cat("[INFO] Saved Fig1_PLSDA_loadings.png\n")
 
 cat(sprintf("\n[INFO] Q1 PLS-DA complete -> %s\n", normalizePath(outdir)))

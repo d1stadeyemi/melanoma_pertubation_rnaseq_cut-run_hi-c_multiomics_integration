@@ -55,14 +55,14 @@ def parse_args():
     )
     p.add_argument("merged_file", help="merged multi-omics table")
     p.add_argument("--outdir",       default="outputs/figures/Q2_coupling")
-    p.add_argument("--lfc_thresh",   type=float, default=1.0,
-                   help="log2FC threshold for RNA change (default 1.0)")
+    p.add_argument("--lfc_thresh",   type=float, default=2.0,
+                   help="log2FC threshold for RNA change (default 2.0)")
     p.add_argument("--me3_thresh",   type=float, default=0.05,
                    help="|H3K27me3 delta| threshold (default 0.05)")
     p.add_argument("--pc1_thresh",   type=float, default=0.03,
                    help="|PC1 delta| threshold (default 0.03)")
-    p.add_argument("--padj_thresh",  type=float, default=0.05,
-                   help="padj threshold for RNA (default 0.05)")
+    p.add_argument("--padj_thresh",  type=float, default=0.01,
+                   help="padj threshold for RNA (default 0.01)")
     return p.parse_args()
 
 
@@ -115,10 +115,16 @@ def classify_coupling(df, args):
             df["b10_minus_parental_h3k27me3"].abs() > args.me3_thresh
         ).fillna(False)
 
-    if pc1_col:
-        df["pc1_changed"] = (
-            df[pc1_col].abs() > args.pc1_thresh
-        ).fillna(False)
+    def has_comp_label(row):
+        for col in ["P->B10_Both_original",
+                    "P->B10_Switch_Orig",
+                    "P->B10_Shift_Orig"]:
+            v = str(row.get(col, "")).strip()
+            if v not in ["-", "", "nan", "None"]:
+                return True
+        return False
+
+    df["pc1_changed"] = df.apply(has_comp_label, axis=1)
 
     # Direction of each change
     if rna_ok:

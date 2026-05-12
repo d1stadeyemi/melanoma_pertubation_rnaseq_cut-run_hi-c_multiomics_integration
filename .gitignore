@@ -3,6 +3,8 @@ raw/data/*
 raw/files/*
 raw/tempo/
 
+slurm*
+
 # But keep the placeholder
 !raw/data/.gitkeep
 !raw/files/.gitkeep
