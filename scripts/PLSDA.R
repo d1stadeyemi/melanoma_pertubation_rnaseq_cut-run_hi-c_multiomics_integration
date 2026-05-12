@@ -155,7 +155,7 @@ p_vip <- ggplot(vip_df,
     title = "Variable Importance in Projection\nParental Marks \u2192 Compartment Switch Prediction"
   ) +
   annotate("text", x = 0.6, y = 1.05,
-           label = "VIP = 1.0 (significance threshold)",
+           label = "VIP = 1.0\n(significance threshold)",
            color = "#C0392B", size = 3, hjust = 0) +
   theme_pub +
   theme(legend.position = "bottom")
@@ -207,7 +207,7 @@ cat("[INFO] Saved Fig1_PLSDA_scores.png\n")
 
 # ── Loading plot ───────────────────────────────────────────────────────────────
 pdf(file.path(outdir, "Fig1_PLSDA_loadings.pdf"), width = 6.5, height = 5.5)
-par(mar = c(5, 5, 5, 3))
+par(mar = c(5, 5, 7, 3))
 plotLoadings(
   plsda_res,
   comp    = 1,
@@ -219,7 +219,7 @@ dev.off()
 cat("[INFO] Saved Fig1_PLSDA_loadings.pdf\n")
 
 png(file.path(outdir, "Fig1_PLSDA_loadings.png"), width = 6.5, height = 5.5, units = "in", res = 600)
-par(mar = c(5, 5, 5, 3))
+par(mar = c(5, 5, 7, 3))
 plotLoadings(
   plsda_res,
   comp    = 1,

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Q1: Epigenetic priming predicts compartment switching — Random Forest + SHAP
+Epigenetic priming predicts compartment switching — Random Forest + SHAP
 
 Usage:
-    python scripts/Q1a_RF_SHAP.py \
+    python scripts/RF_SHAP.py \
         outputs/tables/cut_run_signal_table.txt \
         outputs/tables/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
         --outdir outputs/figures/Q1_RF_SHAP
@@ -397,7 +397,7 @@ def run_rf_shap(df, mark_names, outdir):
     sv = shap_vals[1] if isinstance(shap_vals, list) else shap_vals
 
     mean_shap = np.abs(sv).mean(axis=0)
-    order     = np.argsort(mean_shap)[::-1]
+    order     = np.argsort(mean_shap)[::-1].astype(int)
 
     fig_shap, ax_shap = plt.subplots(figsize=(5.5, 4))
     top_idx   = int(np.argmax(mean_shap))   # directly get index of highest SHAP value
