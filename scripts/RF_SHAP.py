@@ -391,15 +391,23 @@ def run_rf_shap(df, mark_names, outdir):
     rf.fit(X, y)
     explainer = shap.TreeExplainer(rf)
     shap_vals = explainer.shap_values(X)
-    # class 1 (switcher) SHAP values
-    sv = shap_vals[1] if isinstance(shap_vals, list) else shap_vals
+    # Handle all SHAP return shapes:
+    #   - list of [class0, class1] arrays (older SHAP)         -> pick [1]
+    #   - 3D array (n_samples, n_features, n_classes) (newer)  -> pick [..., 1]
+    #   - 2D array (n_samples, n_features) (regression-like)   -> use as-is
+    if isinstance(shap_vals, list):
+        sv = shap_vals[1]
+    elif np.ndim(shap_vals) == 3:
+        sv = shap_vals[:, :, 1]
+    else:
+        sv = shap_vals
 
-    mean_shap = np.abs(sv).mean(axis=0)
-    order     = np.argsort(mean_shap)[::-1].astype(int)
+    mean_shap = np.abs(sv).mean(axis=0).ravel()   # force 1D
+    order     = np.argsort(mean_shap)[::-1]       # 1D int array
 
     fig_shap, ax_shap = plt.subplots(figsize=(5.5, 4))
-    top_idx   = int(np.argmax(mean_shap))   # directly get index of highest SHAP value
-    bar_colors = ["#C0392B" if int(np.ravel(i)[0]) == top_idx else "#1A5276" for i in order]
+    top_idx    = int(np.argmax(mean_shap))
+    bar_colors = ["#C0392B" if int(i) == top_idx else "#1A5276" for i in order]
     ax_shap.barh(
         [mark_names[i] for i in order[::-1]],
         [mean_shap[i] for i in order[::-1]],

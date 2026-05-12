@@ -30,13 +30,13 @@ echo "=========================================="
 
 conda deactivate
 
-conda activate r_analysis
+#conda activate r_analysis
 
-./scripts/PLSDA.R \
-    $FIGS/Q1_RF_SHAP/Q1_switch_classified.txt \
-    $FIGS/Q1_PLSDA
+#./scripts/PLSDA.R \
+#    $FIGS/Q1_RF_SHAP/Q1_switch_classified.txt \
+#    $FIGS/Q1_PLSDA
 
-conda deactivate
+#conda deactivate
 
 echo "=========================================="
 echo " All analyses complete."
