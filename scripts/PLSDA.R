@@ -207,26 +207,28 @@ cat("[INFO] Saved Fig1_PLSDA_scores.png\n")
 
 # ── Loading plot ───────────────────────────────────────────────────────────────
 pdf(file.path(outdir, "Fig1_PLSDA_loadings.pdf"), width = 6.5, height = 5.5)
-par(mar = c(5, 5, 7, 3))
+par(mar = c(5, 5, 4, 3))
 plotLoadings(
   plsda_res,
   comp    = 1,
   method  = "mean",
   contrib = "max",
-  title   = "PLS-DA Loadings: Component 1"
+  title   = ""
 )
+mtext("PLS-DA Loadings: Component 1", side = 3, line = 2.5, cex = 1, font = 2)
 dev.off()
 cat("[INFO] Saved Fig1_PLSDA_loadings.pdf\n")
 
 png(file.path(outdir, "Fig1_PLSDA_loadings.png"), width = 6.5, height = 5.5, units = "in", res = 600)
-par(mar = c(5, 5, 7, 3))
+par(mar = c(5, 5, 4, 3))
 plotLoadings(
   plsda_res,
   comp    = 1,
   method  = "mean",
   contrib = "max",
-  title   = "PLS-DA Loadings: Component 1"
+  title   = ""
 )
+mtext("PLS-DA Loadings: Component 1", side = 3, line = 2.5, cex = 1, font = 2)
 dev.off()
 cat("[INFO] Saved Fig1_PLSDA_loadings.png\n")
 

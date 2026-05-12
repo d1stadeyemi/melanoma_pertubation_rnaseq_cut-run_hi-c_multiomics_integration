@@ -15,28 +15,28 @@
 module load anaconda3/2024.06
 source $ANACONDA3_SH
 
-conda activate shap_env
-
 MERGED="outputs/tables/merged_hic_rnaseq_cutrun_parent_bottom10.txt"
 CUTRUN="outputs/tables/cut_run_signal_table.txt"
 FIGS="raw/tempo/"
 
-echo "=========================================="
-echo " Q1: Epigenetic priming"
-echo "=========================================="
-./scripts/RF_SHAP.py \
-    $CUTRUN $MERGED \
-    --outdir $FIGS/Q1_RF_SHAP
+#conda activate shap_env
 
-conda deactivate
-
-#conda activate r_analysis
-
-#./scripts/PLSDA.R \
-#    $FIGS/Q1_RF_SHAP/Q1_switch_classified.txt \
-#    $FIGS/Q1_PLSDA
+#echo "=========================================="
+#echo " Q1: Epigenetic priming"
+#echo "=========================================="
+#./scripts/RF_SHAP.py \
+#    $CUTRUN $MERGED \
+#    --outdir $FIGS/Q1_RF_SHAP
 
 #conda deactivate
+
+conda activate r_analysis
+
+./scripts/PLSDA.R \
+    $FIGS/Q1_RF_SHAP/Q1_switch_classified.txt \
+    $FIGS/Q1_PLSDA
+
+conda deactivate
 
 echo "=========================================="
 echo " All analyses complete."
