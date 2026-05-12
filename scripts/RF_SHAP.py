@@ -274,10 +274,8 @@ def plot_violin_marks(df, mark_names, outdir):
     cat_order  = [c for c in cat_order if c in df["switch_cat"].unique()]
     short_labs = [SWITCH_LABELS[c] for c in cat_order]
 
-    fig, axes = plt.subplots(1, len(mark_names),
-                              figsize=(3.0 * len(mark_names), 4.5))
-    if len(mark_names) == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+    axes = axes.flatten()
 
     for ax, mark in zip(axes, mark_names):
         groups = [df[df["switch_cat"] == c][mark].dropna().values
