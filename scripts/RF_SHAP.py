@@ -14,8 +14,8 @@ Outputs:
     Fig1c_RF_ROC.pdf/png
     Fig1d_SHAP_importance.pdf/png
     Fig1e_PCA_marks.pdf/png
-    Q1_statistics.txt
-    Q1_switch_classified.txt
+    Statistics.txt
+    Switch_classified.txt
 """
 
 import argparse
@@ -471,7 +471,7 @@ def save_statistics(df, mark_names, outdir):
     res_df = pd.DataFrame(results)
     if len(res_df):
         res_df["padj_BH"] = multipletests(res_df["p_value"], method="fdr_bh")[1]
-        out = os.path.join(outdir, "Q1_statistics.txt")
+        out = os.path.join(outdir, "Statistics.txt")
         res_df.to_csv(out, sep="\t", index=False)
         print(f"[INFO] Statistics saved -> {out}")
         print(res_df[["mark", "median_switchers", "median_stable",
@@ -485,7 +485,7 @@ def main():
     df, mark_names = load_data(args.cutrun_file, args.merged_file)
 
     # Save classified gene table for downstream R scripts
-    out_genes = os.path.join(args.outdir, "Q1_switch_classified.txt")
+    out_genes = os.path.join(args.outdir, "Switch_classified.txt")
     df.to_csv(out_genes, sep="\t", index=False)
     print(f"[INFO] Classified gene table saved -> {out_genes}")
 
