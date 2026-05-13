@@ -22,6 +22,9 @@ results/final/tables/**
 conda-envs/
 conda-pkgs/
 
+# Ignore notes
+NOTES.md
+
 # Python
 .venv/
 __pycache__/
