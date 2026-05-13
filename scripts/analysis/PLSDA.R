@@ -4,9 +4,9 @@
 # Reference: Rohart et al., PLOS Computational Biology 2017
 #
 # Usage:
-#   Rscript scripts/Q1b_PLSDA.R \
-#     outputs/figures/Q1_RF_SHAP/Q1_switch_classified.txt \
-#     outputs/figures/Q1_PLSDA
+#   Rscript scripts/analysis/PLSDA.R \
+#     results/exploratory/Q1_RF_SHAP/Q1_switch_classified.txt \
+#     results/exploratory/Q1_PLSDA
 # =============================================================================
 
 suppressPackageStartupMessages({
@@ -20,9 +20,9 @@ suppressPackageStartupMessages({
 # ── Arguments ─────────────────────────────────────────────────────────────────
 args       <- commandArgs(trailingOnly = TRUE)
 input_file <- if (length(args) >= 1) args[1] else
-  "outputs/figures/Q1_RF_SHAP/Q1_switch_classified.txt"
+  "results/exploratory/Q1_RF_SHAP/Q1_switch_classified.txt"
 outdir     <- if (length(args) >= 2) args[2] else
-  "outputs/figures/Q1_PLSDA"
+  "results/exploratory/Q1_PLSDA"
 dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
 
 # ── Publication theme ─────────────────────────────────────────────────────────

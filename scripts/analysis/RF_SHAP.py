@@ -4,9 +4,9 @@ Epigenetic priming predicts compartment switching — Random Forest + SHAP
 
 Usage:
     python scripts/RF_SHAP.py \
-        outputs/tables/cut_run_signal_table.txt \
-        outputs/tables/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
-        --outdir outputs/figures/Q1_RF_SHAP
+        data/processed/cut_run_signal_table.txt \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --outdir results/exploratory/Q1_RF_SHAP
 
 Outputs:
     Fig1a_switch_distribution.pdf/png
@@ -80,7 +80,8 @@ def parse_args():
     )
     p.add_argument("cutrun_file",  help="cut_run_signal_table.txt")
     p.add_argument("merged_file",  help="merged multi-omics table")
-    p.add_argument("--outdir",     default="outputs/figures/Q1_RF_SHAP")
+    p.add_argument("--outdir",     default="results/exploratory/Q1_RF_SHAP",
+                        help="Output directory for figures and tables")
     return p.parse_args()
 
 
