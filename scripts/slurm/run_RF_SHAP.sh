@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --output=logs/rf_shap_%j.out
 #SBATCH --error=logs/rf_shap_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
@@ -20,22 +20,22 @@ MERGED="data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt"
 CUTRUN="data/processed/cut_run_signal_table.txt"
 FIGS="results/exploratory"
 
-#conda activate multiomics-py
+conda activate multiomics-ml
 
-#echo "=========================================="
-#echo " Q1: Epigenetic priming"
-#echo "=========================================="
-#./scripts/analysis/RF_SHAP.py \
-#    $CUTRUN $MERGED \
-#    --outdir $FIGS/Q1_RF_SHAP
+echo "=========================================="
+echo " Epigenetic priming"
+echo "=========================================="
+python scripts/RF_SHAP.py \
+    $CUTRUN $MERGED \
+    --outdir $FIGS/RF_SHAP
 
-#conda deactivate
+conda deactivate
 
 conda activate multiomics-r
 
-./scripts/analysis/PLSDA.R \
-    $FIGS/Q1_RF_SHAP/Q1_switch_classified.txt \
-    $FIGS/Q1_PLSDA
+Rscript scripts/PLSDA.R \
+    $FIGS/RF_SHAP/Switch_classified.txt \
+    $FIGS/PLSDA
 
 conda deactivate
 

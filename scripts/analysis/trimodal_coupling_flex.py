@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
 """
-Q2: Flexible trimodal (or multi-modal) coupling analysis
+Flexible trimodal (or multi-modal) coupling analysis
 
 Hi-C compartment is always included by default.
 You must specify at least one of --rna or --marks.
@@ -92,7 +91,7 @@ def parse_args():
         epilog=__doc__
     )
     p.add_argument("merged_file", help="merged multi-omics table")
-    p.add_argument("--outdir",      default="outputs/figures/trimodal_coupling")
+    p.add_argument("--outdir",      default="results/exploratory")
 
     # ── Modality selection ────────────────────────────────────────────────────
     p.add_argument("--rna",    action="store_true",
@@ -313,6 +312,7 @@ def plot_upset(df, modalities, outdir):
         sort_categories_by='cardinality',
         show_counts='%d',
         facecolor='#222222',
+        other_dots_color=0.18,        # grey level 0-1 for "absent" dots
         element_size=42,
         intersection_plot_elements=8,
         totals_plot_elements=4,
@@ -323,58 +323,62 @@ def plot_upset(df, modalities, outdir):
     upset.style_subsets(
         present=mod_names,        # the bar where every modality is True
         facecolor='#C0392B',      # red highlight
-        edgecolor='#C0392B',      # makes the legend swatch render reliably
         label=f"All {n_mods} co-changed",
     )
 
     # ── 5. Draw onto a sized figure ──────────────────────────────────────────
     # Width scales gently with modality count so 2 vs 5 modalities both look
     # balanced. Height grows with category rows.
-    fig = plt.figure(figsize=(max(11, 1.2 * n_mods + 8), 6.5 + 0.4 * n_mods))
-    axes = upset.plot(fig=fig)   # returns dict of internal axes
+    try:
+        fig = plt.figure(figsize=(max(11, 1.2 * n_mods + 8), 6.5 + 0.4 * n_mods))
+        axes = upset.plot(fig=fig)   # returns dict of internal axes
 
-    # ── 6. Polish the axes ───────────────────────────────────────────────────
-    # 6a. Top bar panel y-label.
-    axes['intersections'].set_ylabel("Intersection size", fontsize=11)
+        # ── 6. Polish the axes ───────────────────────────────────────────────────
+        # 6a. Top bar panel y-label.
+        axes['intersections'].set_ylabel("Intersection size", fontsize=11)
 
-    # 6b. Side totals panel: widen the data limit so the numeric labels
-    #     drawn by show_counts don't get clipped at the edge. The totals
-    #     axis is normally inverted (large values extend leftward), so we
-    #     extend whichever side represents the larger magnitude.
-    totals_ax = axes['totals']
-    totals_ax.set_xlabel("Set size", fontsize=10)
-    xmin, xmax = totals_ax.get_xlim()
-    pad = 0.20 * abs(xmin - xmax)
-    if xmin > xmax:           # inverted (typical)
-        totals_ax.set_xlim(xmin + pad, xmax)
-    else:                     # non-inverted (defensive)
-        totals_ax.set_xlim(xmin, xmax + pad)
+        # 6b. Side totals panel: widen the data limit so the numeric labels
+        #     drawn by show_counts don't get clipped at the edge. The totals
+        #     axis is normally inverted (large values extend leftward), so we
+        #     extend whichever side represents the larger magnitude.
+        totals_ax = axes['totals']
+        totals_ax.set_xlabel("Set size", fontsize=10)
+        xmin, xmax = totals_ax.get_xlim()
+        pad = 0.20 * abs(xmin - xmax)
+        if xmin > xmax:           # inverted (typical)
+            totals_ax.set_xlim(xmin + pad, xmax)
+        else:                     # non-inverted (defensive)
+            totals_ax.set_xlim(xmin, xmax + pad)
 
-    # 6c. Category tick labels on the matrix axis: push them away from the
-    #     dots so "Hi-C Compartment" / "Transcription" have breathing room.
-    matrix_ax = axes['matrix']
-    for tick in matrix_ax.get_yticklabels():
-        tick.set_horizontalalignment('right')
-        tick.set_fontsize(10.5)
-    matrix_ax.tick_params(axis='y', pad=8)
+        # 6c. Category tick labels on the matrix axis: push them away from the
+        #     dots so "Hi-C Compartment" / "Transcription" have breathing room.
+        matrix_ax = axes['matrix']
+        for tick in matrix_ax.get_yticklabels():
+            tick.set_horizontalalignment('right')
+            tick.set_fontsize(10.5)
+        matrix_ax.tick_params(axis='y', pad=8)
 
-    # 6d. Format the legend created by style_subsets.
-    leg = axes['intersections'].get_legend()
-    if leg is not None:
-        leg.set_frame_on(True)
-        leg.set_bbox_to_anchor((1.0, 1.0))
-        leg.set_loc('upper right')
+        # 6d. Format the legend created by style_subsets.
+        leg = axes['intersections'].get_legend()
+        if leg is not None:
+            leg.set_frame_on(True)
+            leg.set_bbox_to_anchor((1.0, 1.0))
+            leg.set_loc('upper right')
 
-    # ── 7. Title ─────────────────────────────────────────────────────────────
-    mod_str = " + ".join(mod_names)
-    fig.suptitle(
-        f"Co-occurrence of Multi-omics Changes\n"
-        f"Parental \u2192 Bottom10  ({mod_str})",
-        fontweight="bold", fontsize=12, y=1.02,
-    )
+        # ── 7. Title ─────────────────────────────────────────────────────────────
+        mod_str = " + ".join(mod_names)
+        fig.suptitle(
+            f"Co-occurrence of Multi-omics Changes\n"
+            f"Parental \u2192 Bottom10  ({mod_str})",
+            fontweight="bold", fontsize=12, y=1.02,
+        )
 
-    # ── 8. Save (PDF + PNG, 600 dpi, via the existing helper) ────────────────
-    save_fig(fig, outdir, "Fig2a_upset_cooccurrence")    
+        # ── 8. Save (PDF + PNG, 600 dpi, via the existing helper) ────────────────
+        save_fig(fig, outdir, "Fig2a_upset_cooccurrence")
+    except (ValueError, TypeError) as e:
+        print(f"[WARN] UpSet plot failed due to upsetplot/matplotlib compatibility issue: {e}")
+        print("[WARN] Skipping Fig 2a. This is a known issue with certain upsetplot versions.")
+        plt.close('all')    
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOT B: Pairwise Spearman correlations
@@ -570,6 +574,10 @@ def plot_concordance_bar(df, modalities, outdir):
 def main():
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
+    
+    # Create trimodal_coupling subdirectory for all figures
+    fig_outdir = os.path.join(args.outdir, "trimodal_coupling")
+    os.makedirs(fig_outdir, exist_ok=True)
 
     print("[INFO] Loading merged table...")
     df = pd.read_csv(args.merged_file, sep="\t", low_memory=False)
@@ -586,20 +594,20 @@ def main():
     print(df["coupling_state"].value_counts().to_string())
 
     # Save
-    out_path = os.path.join(args.outdir, "Q2_coupling_classified.txt")
+    out_path = os.path.join(fig_outdir, "Q2_coupling_classified.txt")
     df.to_csv(out_path, sep="\t", index=False)
     print(f"\n[INFO] Saved -> {out_path}")
 
     print("\n[INFO] Generating Fig 2a: UpSet plot...")
-    plot_upset(df, modalities, args.outdir)
+    plot_upset(df, modalities, fig_outdir)
 
     print("[INFO] Generating Fig 2b: Spearman correlations...")
-    plot_spearman(df, modalities, args.outdir)
+    plot_spearman(df, modalities, fig_outdir)
 
     print("[INFO] Generating Fig 2c: Concordance bar chart...")
-    plot_concordance_bar(df, modalities, args.outdir)
+    plot_concordance_bar(df, modalities, fig_outdir)
 
-    print(f"\n[INFO] Q2 complete -> {os.path.abspath(args.outdir)}")
+    print(f"\n[INFO] Q2 complete -> {os.path.abspath(fig_outdir)}")
 
 
 if __name__ == "__main__":
