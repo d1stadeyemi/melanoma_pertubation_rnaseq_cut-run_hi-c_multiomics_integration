@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #SBATCH --nodes=1
-#SBATCH --time=04:00:00
-#SBATCH -A ACF-UTK0011
+#SBATCH --time=01:00:00
+#SBATCH -A ACF-UTK0009
 #SBATCH --qos=campus
 #SBATCH --partition=campus
 #SBATCH --ntasks-per-node=8

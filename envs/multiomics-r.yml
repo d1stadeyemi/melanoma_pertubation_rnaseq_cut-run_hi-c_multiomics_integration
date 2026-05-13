@@ -1,0 +1,31 @@
+name: multiomics-r
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base=4.4
+  - r-essentials
+  - r-tidyverse
+  - r-data.table
+  - r-ggplot2
+  - r-ggpubr
+  - r-pheatmap
+  - r-circlize
+  - r-cowplot
+  - r-patchwork
+  - r-rcolorbrewer
+  - r-viridis
+  - r-here
+  - r-yaml
+  - r-optparse
+  # Bioconductor
+  - bioconductor-deseq2
+  - bioconductor-edger
+  - bioconductor-limma
+  - bioconductor-complexheatmap
+  - bioconductor-mixomics
+  - bioconductor-genomicranges
+  - bioconductor-rtracklayer
+  - bioconductor-biomart
+  - bioconductor-clusterprofiler
+  - bioconductor-enhancedvolcano

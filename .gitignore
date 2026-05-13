@@ -1,20 +1,26 @@
-# Raw data — never push to GitHub
-raw/data/*
-raw/files/*
-raw/tempo/
+# Data — never push to GitHub
+data/raw/**
+data/interim/**
+data/processed/**
+!data/**/README.md            
+!data/**/.gitkeep             
 
-slurm*
+# SLURM output dumped at root
+slurm-*.out
 
-# But keep the placeholder
-!raw/data/.gitkeep
-!raw/files/.gitkeep
+# Logs
+logs/**
+!logs/.gitkeep
 
-# Large outputs
-outputs/figures/*
-outputs/tables/*
+# Exploratory results — too churny to track
+results/exploratory/**
+results/final/tables/**
+!results/exploratory/.gitkeep
+!results/final/tables/.gitkeep
 
-!outputs/figures/.gitkeep
-!outputs/tables/.gitkeep
+# Conda environments and packages
+conda-envs/
+conda-pkgs/
 
 # Python
 .venv/
@@ -22,17 +28,25 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
 # Conda
+.conda/
 myenv/
 
 # Snakemake
 .snakemake/
 
-# Vscode
-.vscode/
+# Editor
+.vscode/      
+.idea/
 
 # OS
 .DS_Store
+Thumbs.db
 
 # Test ipynb
 test.ipynb

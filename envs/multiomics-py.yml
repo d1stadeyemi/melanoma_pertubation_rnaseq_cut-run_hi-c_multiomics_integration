@@ -1,0 +1,35 @@
+name: multiomics-py
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  # core data
+  - numpy < 2.0
+  - pandas
+  - scipy
+  - statsmodels
+  - polars
+  # plotting
+  - matplotlib
+  - seaborn
+  - plotly
+  # bioinformatics
+  - pybigwig
+  - pybedtools
+  - pysam
+  - bedtools
+  - samtools
+  - deeptools
+  - bioframe
+  - cooler
+  - cooltools
+  # I/O and utilities
+  - pyyaml
+  - tqdm
+  - openpyxl
+  - jupyterlab
+  - ipykernel
+  # for provenance utility
+  - gitpython
