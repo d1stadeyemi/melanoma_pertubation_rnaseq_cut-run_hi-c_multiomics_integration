@@ -187,7 +187,7 @@ def build_modalities(df, args):
         modalities["Hi-C Compartment"] = {
             "changed_col": "_hic_changed",
             "delta_col":   pc1_col,
-            "color":       MODALITY_COLORS[color_idx],
+            "color":       MODALITY_COLORS[color_idx % len(MODALITY_COLORS)],
         }
         color_idx += 1
 
@@ -282,7 +282,7 @@ def plot_upset(df, modalities, outdir):
         sort_categories_by='cardinality',
         show_counts='%d',
         facecolor='#222222',
-        other_dots_color=0.18,
+        other_dots_color='0.18',
         element_size=42,
         intersection_plot_elements=8,
         totals_plot_elements=4,
@@ -396,7 +396,7 @@ def plot_spearman(df, modalities, outdir):
         ax.plot(xl, np.polyval(z, xl),
                 color="black", lw=1.2, ls="--", alpha=0.7)
 
-        p_str = f"{p:.2e}" if p >= 1e-4 else "< 10⁻⁴"
+        p_str = f"{p:.2e}" if p >= 1e-4 else "$< 10^{-4}$"
         ax.text(0.05, 0.95,
                 f"ρ = {rho:.3f}\np = {p_str}",
                 transform=ax.transAxes, fontsize=9, va="top",
@@ -409,7 +409,7 @@ def plot_spearman(df, modalities, outdir):
         # Axis labels: use delta symbol + modality name
         def delta_label(name, col):
             if "log" in col.lower() or "fc" in col.lower():
-                return f"log₂FC ({name})"
+                return f"$\log_2 FC$ ({name})"
             return f"Δ{name} (B10 − Parental)"
 
         ax.set_xlabel(delta_label(xname, xcol), labelpad=5)

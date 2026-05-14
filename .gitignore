@@ -55,3 +55,7 @@ Thumbs.db
 
 # Test ipynb
 test.ipynb
+
+# Local backups created by patch scripts
+**/*.bak
+**/*.bak.*
