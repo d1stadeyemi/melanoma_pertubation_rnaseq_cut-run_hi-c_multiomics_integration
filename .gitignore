@@ -18,6 +18,8 @@ results/final/tables/**
 !results/exploratory/.gitkeep
 !results/final/tables/.gitkeep
 
+results/exploratory_2
+
 # Conda environments and packages
 conda-envs/
 conda-pkgs/

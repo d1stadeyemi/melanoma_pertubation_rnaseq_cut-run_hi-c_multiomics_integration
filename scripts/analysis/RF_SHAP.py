@@ -593,20 +593,32 @@ def plot_shap_dependence(sv, X, mark_names, pairs, outdir):
     outdir     : str
                  Output directory.
     """
-    name_to_idx = {m: i for i, m in enumerate(mark_names)}
+# Case-insensitive mark lookup: tolerates typos like 'H3K27ac' vs 'H3K27Ac'
+    name_to_idx_ci = {m.lower(): i for i, m in enumerate(mark_names)}
+
+    def resolve(name):
+        """Return canonical mark name for a user-supplied string, or None."""
+        idx = name_to_idx_ci.get(name.lower())
+        if idx is None:
+            return None
+        return mark_names[idx]
 
     for pair in pairs:
-        feat_a, feat_b = pair
-        if feat_a not in name_to_idx:
-            print(f"  [WARN] '{feat_a}' not in detected marks "
-                  f"{mark_names}; skipping pair {feat_a}:{feat_b}")
+        feat_a_in, feat_b_in = pair
+        feat_a = resolve(feat_a_in)
+        feat_b = resolve(feat_b_in)
+
+        if feat_a is None:
+            print(f"  [WARN] '{feat_a_in}' not in detected marks "
+                  f"{mark_names}; skipping pair {feat_a_in}:{feat_b_in}")
             continue
-        if feat_b not in name_to_idx:
-            print(f"  [WARN] '{feat_b}' not in detected marks "
-                  f"{mark_names}; skipping pair {feat_a}:{feat_b}")
+        if feat_b is None:
+            print(f"  [WARN] '{feat_b_in}' not in detected marks "
+                  f"{mark_names}; skipping pair {feat_a_in}:{feat_b_in}")
             continue
 
-        idx_a, idx_b = name_to_idx[feat_a], name_to_idx[feat_b]
+        idx_a = name_to_idx_ci[feat_a.lower()]
+        idx_b = name_to_idx_ci[feat_b.lower()]
         print(f"[INFO] SHAP dependence pair: {feat_a} <-> {feat_b}")
 
         fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(12, 4.8))
