@@ -156,9 +156,9 @@ def get_comp_dir(row):
         v = str(row.get(col, "")).strip()
         if v not in ["-", "", "nan", "None"]:
             if "toA" in v or v in ["BtoA", "TowardA"]:
-                return "B\u2192A"
+                return "B→A"
             if "toB" in v or v in ["AtoB", "TowardB"]:
-                return "A\u2192B"
+                return "A→B"
     return "Stable"
 
 
@@ -248,71 +248,41 @@ def make_coupling_label(row, modalities):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PLOT A: UpSet — manual matplotlib implementation (version-safe)
+# PLOT A: UpSet plot
 # ══════════════════════════════════════════════════════════════════════════════
 def plot_upset(df, modalities, outdir):
     """
     UpSet plot using the upsetplot library
     """
-    try:
-        from upsetplot import UpSet, from_memberships
-    except ImportError:
-        print("[WARN] `upsetplot` not installed. "
-              "Install with `pip install upsetplot` to enable Fig 2a. Skipping.")
-        return
+    from upsetplot import UpSet, from_memberships
 
     # ── 1. Build per-gene membership lists ───────────────────────────────────
-    # For each gene, record which modalities it is "changed" in.
     mod_names    = list(modalities.keys())
     changed_cols = [modalities[m]["changed_col"] for m in mod_names]
 
     # NaN-safe: missing values are treated as "not changed".
     changed_bool = df[changed_cols].fillna(False).astype(bool)
 
-    # List-of-lists: for each row, which modalities are True.
     memberships = [
         [name for name, flag in zip(mod_names, row) if flag]
         for row in changed_bool.itertuples(index=False, name=None)
     ]
 
-    # ── 2. Convert to the Series format UpSet expects ────────────────────────
-    # `from_memberships(memberships, data=ones)` produces ONE Series row per
-    # gene. That means the resulting MultiIndex has duplicate combinations,
-    # which trips UpSet's default subset_size="auto" with:
-    #   ValueError: subset_size="auto" cannot be used for a Series with
-    #               non-unique groups.
-    # The fix is twofold:
-    #   (a) pass subset_size="sum" to UpSet so it groups duplicate index rows
-    #       by summing their values (== counting genes per intersection), OR
-    #   (b) pre-aggregate here with groupby().sum().
-    # We use option (b) — it's cleaner, makes the data smaller, and avoids
-    # any quirks with how different upsetplot versions parse "sum".
+    # ── 2. Aggregate into one count per unique intersection ───────────────────
     upset_data = from_memberships(
         memberships,
         data=np.ones(len(memberships), dtype=int),
     )
-    # Collapse the per-gene rows into one row per unique intersection.
-    # The MultiIndex of booleans is preserved; values become counts.
     upset_data = upset_data.groupby(level=list(range(len(mod_names)))).sum()
 
     # ── 3. Configure the UpSet object ────────────────────────────────────────
-    # show_counts='%d'              -> draws integer labels just outside bars,
-    #                                  both intersection bars (top) and totals
-    #                                  bars (side). Library handles offset so
-    #                                  they don't intersect the bars.
-    # facecolor='#222222'           -> dark grey bars (matches reference).
-    # element_size=42               -> per-column width of the dot matrix.
-    # intersection_plot_elements=8  -> taller top bar panel so big-count
-    #                                  labels don't run into the title.
-    # totals_plot_elements=4        -> wider side totals panel so side-count
-    #                                  labels have room to the right of bars.
     upset = UpSet(
         upset_data,
         sort_by='cardinality',
         sort_categories_by='cardinality',
         show_counts='%d',
         facecolor='#222222',
-        other_dots_color=0.18,        # grey level 0-1 for "absent" dots
+        other_dots_color=0.18,
         element_size=42,
         intersection_plot_elements=8,
         totals_plot_elements=4,
@@ -321,68 +291,58 @@ def plot_upset(df, modalities, outdir):
     # ── 4. Highlight the "all modalities co-changed" subset ──────────────────
     n_mods = len(mod_names)
     upset.style_subsets(
-        present=mod_names,        # the bar where every modality is True
-        facecolor='#C0392B',      # red highlight
+        present=mod_names,
+        facecolor='#C0392B',
         label=f"All {n_mods} co-changed",
     )
 
-    # ── 5. Draw onto a sized figure ──────────────────────────────────────────
-    # Width scales gently with modality count so 2 vs 5 modalities both look
-    # balanced. Height grows with category rows.
-    try:
-        fig = plt.figure(figsize=(max(11, 1.2 * n_mods + 8), 6.5 + 0.4 * n_mods))
-        axes = upset.plot(fig=fig)   # returns dict of internal axes
+    # ── 5. Draw ──────────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(max(11, 1.2 * n_mods + 8), 6.5 + 0.4 * n_mods))
+    axes = upset.plot(fig=fig)
 
-        # ── 6. Polish the axes ───────────────────────────────────────────────────
-        # 6a. Top bar panel y-label + push first bar away from y-axis so
-        #     count labels don't overlap the spine.
-        inter_ax = axes['intersections']
-        inter_ax.set_ylabel("Intersection size", fontsize=11)
-        ix_min, ix_max = inter_ax.get_xlim()
-        inter_ax.set_xlim(ix_min - 0.4, ix_max)
+    # ── 6. Polish the axes ───────────────────────────────────────────────────
+    # 6a. Top bar panel: label + push first bar away from y-axis so count
+    #     labels don't overlap the spine.
+    inter_ax = axes['intersections']
+    inter_ax.set_ylabel("Intersection size", fontsize=11)
+    ix_min, ix_max = inter_ax.get_xlim()
+    inter_ax.set_xlim(ix_min - 0.4, ix_max)
 
-        # 6b. Side totals panel: widen the data limit so the numeric labels
-        #     drawn by show_counts don't get clipped at the edge. The totals
-        #     axis is normally inverted (large values extend leftward), so we
-        #     extend whichever side represents the larger magnitude.
-        totals_ax = axes['totals']
-        totals_ax.set_xlabel("Set size", fontsize=10)
-        xmin, xmax = totals_ax.get_xlim()
-        pad = 0.20 * abs(xmin - xmax)
-        if xmin > xmax:           # inverted (typical)
-            totals_ax.set_xlim(xmin + pad, xmax)
-        else:                     # non-inverted (defensive)
-            totals_ax.set_xlim(xmin, xmax + pad)
+    # 6b. Side totals panel: widen so count labels don't get clipped.
+    totals_ax = axes['totals']
+    totals_ax.set_xlabel("Set size", fontsize=10)
+    xmin, xmax = totals_ax.get_xlim()
+    pad = 0.20 * abs(xmin - xmax)
+    if xmin > xmax:
+        totals_ax.set_xlim(xmin + pad, xmax)
+    else:
+        totals_ax.set_xlim(xmin, xmax + pad)
 
-        # 6c. Category tick labels on the matrix axis: push them away from the
-        #     dots so "Hi-C Compartment" / "Transcription" have breathing room.
-        matrix_ax = axes['matrix']
-        for tick in matrix_ax.get_yticklabels():
-            tick.set_horizontalalignment('right')
-            tick.set_fontsize(10.5)
-        matrix_ax.tick_params(axis='y', pad=8)
+    # 6c. Category tick labels: breathing room from the dot matrix.
+    matrix_ax = axes['matrix']
+    for tick in matrix_ax.get_yticklabels():
+        tick.set_horizontalalignment('right')
+        tick.set_fontsize(10.5)
+    matrix_ax.tick_params(axis='y', pad=8)
 
-        # 6d. Format the legend created by style_subsets.
-        leg = inter_ax.get_legend()
-        if leg is not None:
-            leg.set_frame_on(True)
-            leg.set_bbox_to_anchor((1.0, 1.0))
-            leg.set_loc('upper right')
+    # 6d. Legend from style_subsets.
+    leg = inter_ax.get_legend()
+    if leg is not None:
+        leg.set_frame_on(True)
+        leg.set_bbox_to_anchor((1.0, 1.0))
+        leg.set_loc('upper right')
 
-        # ── 7. Title ─────────────────────────────────────────────────────────────
-        mod_str = " + ".join(mod_names)
-        fig.suptitle(
-            f"Co-occurrence of Multi-omics Changes\n"
-            f"Parental \u2192 Bottom10  ({mod_str})",
-            fontweight="bold", fontsize=12, y=1.02,
-        )
+    # ── 7. Title ─────────────────────────────────────────────────────────────
+    mod_str = " + ".join(mod_names)
+    fig.suptitle(
+        f"Co-occurrence of Multi-omics Changes\n"
+        f"Parental → Bottom10  ({mod_str})",
+        fontweight="bold", fontsize=12, y=1.02,
+    )
 
-        # ── 8. Save (PDF + PNG, 600 dpi, via the existing helper) ────────────────
-        save_fig(fig, outdir, "Fig2a_upset_cooccurrence")
-    except (ValueError, TypeError) as e:
-        print(f"[WARN] UpSet plot failed due to upsetplot/matplotlib compatibility issue: {e}")
-        print("[WARN] Skipping Fig 2a. This is a known issue with certain upsetplot versions.")
-        plt.close('all')    
+    # ── 8. Save ──────────────────────────────────────────────────────────────
+    save_fig(fig, outdir, "Fig2a_upset_cooccurrence")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOT B: Pairwise Spearman correlations
@@ -436,9 +396,9 @@ def plot_spearman(df, modalities, outdir):
         ax.plot(xl, np.polyval(z, xl),
                 color="black", lw=1.2, ls="--", alpha=0.7)
 
-        p_str = f"{p:.2e}" if p >= 1e-4 else "< 10\u207b\u2074"
+        p_str = f"{p:.2e}" if p >= 1e-4 else "< 10⁻⁴"
         ax.text(0.05, 0.95,
-                f"\u03c1 = {rho:.3f}\np = {p_str}",
+                f"ρ = {rho:.3f}\np = {p_str}",
                 transform=ax.transAxes, fontsize=9, va="top",
                 bbox=dict(boxstyle="round,pad=0.25",
                           fc="white", ec="none", alpha=0.85))
@@ -449,15 +409,15 @@ def plot_spearman(df, modalities, outdir):
         # Axis labels: use delta symbol + modality name
         def delta_label(name, col):
             if "log" in col.lower() or "fc" in col.lower():
-                return f"log\u2082FC ({name})"
-            return f"\u0394{name} (B10 \u2212 Parental)"
+                return f"log₂FC ({name})"
+            return f"Δ{name} (B10 − Parental)"
 
         ax.set_xlabel(delta_label(xname, xcol), labelpad=5)
         ax.set_ylabel(delta_label(yname, ycol), labelpad=5)
 
     fig.suptitle(
         "Pairwise Spearman Correlations: " +
-        " \u2194 ".join([m[0] for m in mod_list]),
+        " ↔ ".join([m[0] for m in mod_list]),
         fontweight="bold", fontsize=12, y=1.02
     )
     plt.tight_layout()
@@ -494,7 +454,7 @@ def plot_concordance_bar(df, modalities, outdir):
         print("[INFO] No other modalities to compare — skipping concordance bar.")
         return
 
-    comp_dirs = ["B\u2192A", "A\u2192B", "Stable"]
+    comp_dirs = ["B→A", "A→B", "Stable"]
     x         = np.arange(len(comp_dirs))
     fig, ax = plt.subplots(figsize=(max(7, len(other_mods) * 2.5), 5))
 
@@ -514,9 +474,9 @@ def plot_concordance_bar(df, modalities, outdir):
             return pd.Series([False] * len(sub), index=sub.index)
         vals       = pd.to_numeric(sub[delta_col], errors="coerce")
         repressive = any(k in delta_col.lower() for k in ["me3", "h3k9", "unc"])
-        if gd == "B\u2192A":
+        if gd == "B→A":
             return (vals < 0) if repressive else (vals > 0)
-        if gd == "A\u2192B":
+        if gd == "A→B":
             return (vals > 0) if repressive else (vals < 0)
         return pd.Series([False] * len(sub), index=sub.index)
 
@@ -564,7 +524,7 @@ def plot_concordance_bar(df, modalities, outdir):
     ax.set_xlabel("Compartment Change Direction", labelpad=6)
     ax.set_title(
         "Directional Concordance with Hi-C Compartment Switch\n"
-        "Parental \u2192 Bottom10",
+        "Parental → Bottom10",
         fontweight="bold", pad=10
     )
     ax.legend(frameon=False, fontsize=9, loc="upper right")
@@ -578,7 +538,7 @@ def plot_concordance_bar(df, modalities, outdir):
 def main():
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
-    
+
     # Create trimodal_coupling subdirectory for all figures
     fig_outdir = os.path.join(args.outdir, "trimodal_coupling")
     os.makedirs(fig_outdir, exist_ok=True)
