@@ -282,7 +282,7 @@ def plot_upset(df, modalities, outdir):
         sort_categories_by='cardinality',
         show_counts='%d',
         facecolor='#222222',
-        other_dots_color='0.18',
+        other_dots_color="#837F7F",
         element_size=42,
         intersection_plot_elements=8,
         totals_plot_elements=4,
