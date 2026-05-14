@@ -7,6 +7,7 @@ Usage:
         data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
         --outdir results/exploratory/RF_SHAP \
         --include_ctcf            # optional: add parental CTCF as a 5th feature
+        --shap_dependence_partners H3K27me3:H3K27Ac H3K4me1:H3K9me3  # optional: pairs of marks for SHAP dependence plots
 
 Outputs:
     Fig1a_switch_distribution.pdf/png
@@ -90,6 +91,20 @@ def parse_args():
                    help="Output directory for figures and tables")
     p.add_argument("--include_ctcf", action="store_true",
                    help="Include parental_ctcf_mean as a 5th feature if present.")
+    p.add_argument(
+        "--shap_dependence_partners",
+        nargs="+",
+        default=None,
+        metavar="MARK1:MARK2",
+        help=(
+            "Pairs of marks for SHAP dependence plots, formatted MARK1:MARK2. "
+            "For each pair, two panels are generated side-by-side: "
+            "MARK1 colored by MARK2, and MARK2 colored by MARK1. "
+            "Provide multiple pairs separated by spaces. "
+            "Example: --shap_dependence_partners H3K27me3:H3K27Ac H3K4me1:H3K9me3 "
+            "If omitted, no dependence plots are generated."
+        ),
+    )    
     return p.parse_args()
 
 
@@ -351,12 +366,13 @@ def plot_violin_marks(df, mark_names, outdir):
     save_fig(fig, outdir, "Fig1b_violin_marks_by_switch")
 
 
-def run_rf_shap(df, mark_names, outdir):
+def run_rf_shap(df, mark_names, outdir, dependence_pairs=None):
     """
     Fig 1c — ROC + PR side-by-side, random/baseline reference lines,
              per-fold AUC dot-plot inset.
     Fig 1d — SHAP bar + beeswarm (aligned row ordering).
-    Fig 1d dependence — SHAP dependence plots for top 2 features.
+    Fig 1d dependence — paired SHAP dependence plots, ONLY if the user
+                        provided --shap_dependence_partners pairs.
     """
     df_m = df[df["switch_cat"].isin(
         ["B_to_A", "A_to_B", "Stable_A", "Stable_B"]
@@ -544,56 +560,126 @@ def run_rf_shap(df, mark_names, outdir):
     plt.tight_layout()
     save_fig(fig_shap, outdir, "Fig1d_SHAP_importance")
 
-    # ── SHAP dependence plots for top 2 features ──────────────────────────────
-    # Tests for non-linear thresholds and pairwise interactions.
-    # For each of the top 2 features, color by the OTHER top feature
-    # (manual interaction choice instead of SHAP's auto-detection, which
-    #  for 4 features can be unstable).
-    plot_shap_dependence(sv, X, mark_names, order, outdir)
+    # ── SHAP dependence plots — only if user specified pairs ─────────────────
+    # Each pair (MARK1, MARK2) produces a 1x2 figure with bidirectional views.
+    if dependence_pairs:
+        plot_shap_dependence(sv, X, mark_names, dependence_pairs, outdir)
+    else:
+        print("[INFO] No --shap_dependence_partners specified; skipping "
+              "dependence plots.")
 
 
-def plot_shap_dependence(sv, X, mark_names, order, outdir, top_n=2):
+def plot_shap_dependence(sv, X, mark_names, pairs, outdir):
     """
-    SHAP dependence plots for top-N features.
-    X axis: log1p(feature value)  -- compresses the H3K9me3-style tail
-    Y axis: SHAP value for that feature (impact on switcher probability)
-    Color : log1p of the next-most-important feature (interaction view)
+    SHAP dependence plots for explicitly specified mark pairs.
+
+    For each (MARK1, MARK2) pair, produce a 1x2 figure:
+        Left panel  : SHAP(MARK1) vs log1p(MARK1), colored by log1p(MARK2)
+        Right panel : SHAP(MARK2) vs log1p(MARK2), colored by log1p(MARK1)
+
+    This lets the user inspect the bidirectional interaction between the two
+    marks at the level of the model's per-gene contributions.
+
+    Parameters
+    ----------
+    sv         : np.ndarray, shape (n_genes, n_features)
+                 SHAP values for the positive (switcher) class.
+    X          : np.ndarray, shape (n_genes, n_features)
+                 Raw feature matrix (CPM signal, untransformed).
+    mark_names : list of str
+                 Column order of X (and of sv).
+    pairs      : list of (str, str) tuples
+                 Mark pairs to plot. Both names must be in mark_names.
+    outdir     : str
+                 Output directory.
     """
-    n = min(top_n, len(order))
-    top_feats = [mark_names[i] for i in order[:n]]
-    print(f"[INFO] SHAP dependence plots for: {top_feats}")
+    name_to_idx = {m: i for i, m in enumerate(mark_names)}
 
-    # Pair each top feature with the next-most-important feature for coloring
-    for rank, idx in enumerate(order[:n]):
-        feat = mark_names[idx]
-        # Pair: the next-most-important feature (cyclic if rank+1 out of range)
-        partner_idx = order[(rank + 1) % len(order)]
-        partner     = mark_names[partner_idx]
+    for pair in pairs:
+        feat_a, feat_b = pair
+        if feat_a not in name_to_idx:
+            print(f"  [WARN] '{feat_a}' not in detected marks "
+                  f"{mark_names}; skipping pair {feat_a}:{feat_b}")
+            continue
+        if feat_b not in name_to_idx:
+            print(f"  [WARN] '{feat_b}' not in detected marks "
+                  f"{mark_names}; skipping pair {feat_a}:{feat_b}")
+            continue
 
-        x_vals = np.log1p(X[:, idx])
-        s_vals = sv[:, idx]
-        c_vals = np.log1p(X[:, partner_idx])
+        idx_a, idx_b = name_to_idx[feat_a], name_to_idx[feat_b]
+        print(f"[INFO] SHAP dependence pair: {feat_a} <-> {feat_b}")
 
-        fig, ax = plt.subplots(figsize=(6, 4.5))
-        sc = ax.scatter(
-            x_vals, s_vals, c=c_vals,
-            cmap="viridis", s=8, alpha=0.55,
-            edgecolors="none", rasterized=True
+        fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(12, 4.8))
+
+        # ── Left panel: SHAP(feat_a) vs feat_a, colored by feat_b ────────────
+        sc_l = ax_l.scatter(
+            np.log1p(X[:, idx_a]), sv[:, idx_a],
+            c=np.log1p(X[:, idx_b]),
+            cmap="plasma", s=8, alpha=0.55,
+            edgecolors="none", rasterized=True,
         )
-        ax.axhline(0, color="black", lw=0.6, alpha=0.5)
-        ax.set_xlabel(f"log1p({feat}) (Parental CPM signal)", labelpad=6)
-        ax.set_ylabel(f"SHAP value for {feat}\n(impact on switcher probability)",
-                      labelpad=6)
-        ax.set_title(
-            f"SHAP Dependence: {feat}\n(colored by {partner})",
-            fontweight="bold", pad=8
+        ax_l.axhline(0, color="black", lw=0.6, alpha=0.5)
+        ax_l.set_xlabel(f"log1p({feat_a}) (Parental CPM signal)", labelpad=6)
+        ax_l.set_ylabel(
+            f"SHAP value for {feat_a}\n(impact on switcher probability)",
+            labelpad=6,
         )
-        cbar = plt.colorbar(sc, ax=ax, pad=0.02)
-        cbar.set_label(f"log1p({partner})", fontsize=9)
-        cbar.ax.tick_params(labelsize=8)
+        ax_l.set_title(
+            f"SHAP Dependence: {feat_a}\n(colored by {feat_b})",
+            fontweight="bold", pad=8,
+        )
+        cbar_l = plt.colorbar(sc_l, ax=ax_l, pad=0.02)
+        cbar_l.set_label(f"log1p({feat_b})", fontsize=9)
+        cbar_l.ax.tick_params(labelsize=8)
+
+        # ── Right panel: SHAP(feat_b) vs feat_b, colored by feat_a ───────────
+        sc_r = ax_r.scatter(
+            np.log1p(X[:, idx_b]), sv[:, idx_b],
+            c=np.log1p(X[:, idx_a]),
+            cmap="plasma", s=8, alpha=0.55,
+            edgecolors="none", rasterized=True,
+        )
+        ax_r.axhline(0, color="black", lw=0.6, alpha=0.5)
+        ax_r.set_xlabel(f"log1p({feat_b}) (Parental CPM signal)", labelpad=6)
+        ax_r.set_ylabel(
+            f"SHAP value for {feat_b}\n(impact on switcher probability)",
+            labelpad=6,
+        )
+        ax_r.set_title(
+            f"SHAP Dependence: {feat_b}\n(colored by {feat_a})",
+            fontweight="bold", pad=8,
+        )
+        cbar_r = plt.colorbar(sc_r, ax=ax_r, pad=0.02)
+        cbar_r.set_label(f"log1p({feat_a})", fontsize=9)
+        cbar_r.ax.tick_params(labelsize=8)
 
         plt.tight_layout()
-        save_fig(fig, outdir, f"Fig1d_dependence_{feat}")
+        # Safe filename: e.g. "Fig1d_dependence_H3K27me3_vs_H3K27Ac"
+        stem = f"Fig1d_dependence_{feat_a}_vs_{feat_b}"
+        save_fig(fig, outdir, stem)
+
+
+def parse_dependence_pairs(raw_pairs):
+    """
+    Parse CLI strings like 'H3K27me3:H3K27Ac' into (str, str) tuples.
+    Returns an empty list if raw_pairs is None or empty.
+    Skips malformed entries with a warning.
+    """
+    if not raw_pairs:
+        return []
+    out = []
+    for s in raw_pairs:
+        if ":" not in s:
+            print(f"[WARN] --shap_dependence_partners entry '{s}' missing ':' "
+                  f"(expected MARK1:MARK2); skipping.")
+            continue
+        parts = s.split(":")
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            print(f"[WARN] --shap_dependence_partners entry '{s}' malformed; "
+                  f"skipping.")
+            continue
+        out.append((parts[0].strip(), parts[1].strip()))
+    return out
 
 
 def plot_pca(df, mark_names, outdir):
@@ -707,8 +793,12 @@ def main():
     print("[INFO] Generating Fig 1b...")
     plot_violin_marks(df, mark_names, args.outdir)
 
-    print("[INFO] Random Forest + SHAP (Fig 1c ROC+PR; Fig 1d bar+beeswarm+dependence)...")
-    run_rf_shap(df, mark_names, args.outdir)
+    pairs = parse_dependence_pairs(args.shap_dependence_partners)
+    if pairs:
+        print(f"[INFO] SHAP dependence pairs requested: {pairs}")
+    print("[INFO] Random Forest + SHAP (Fig 1c ROC+PR; Fig 1d bar+beeswarm"
+          + (" + dependence)..." if pairs else ")..."))
+    run_rf_shap(df, mark_names, args.outdir, dependence_pairs=pairs)
 
     print("[INFO] Generating Fig 1e: PCA (log1p, scatter only)...")
     plot_pca(df, mark_names, args.outdir)

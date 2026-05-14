@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --output=logs/rf_shap_%j.out
 #SBATCH --error=logs/rf_shap_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
@@ -25,15 +25,17 @@ FIGS="results/exploratory"
 #echo "=========================================="
 #echo " Epigenetic priming"
 #echo "=========================================="
-#python scripts/RF_SHAP.py \
+#python scripts/analysis/RF_SHAP.py \
 #    $CUTRUN $MERGED \
-#    --outdir $FIGS/RF_SHAP
+#    --outdir $FIGS/RF_SHAP \
+#    --shap_dependence_partners "H3K27ac:H3K27me3" "H3K27me3:H3K4me3"
+
 
 #conda deactivate
 
 conda activate multiomics-r
 
-Rscript scripts/PLSDA.R \
+Rscript scripts/analysis/PLSDA.R \
     $FIGS/RF_SHAP/Switch_classified.txt \
     $FIGS/PLSDA
 
