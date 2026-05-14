@@ -298,9 +298,10 @@ def plot_violin_marks(df, mark_names, outdir):
     cat_order  = ["B_to_A", "A_to_B", "Stable_A", "Stable_B"]
     cat_order  = [c for c in cat_order if c in df["switch_cat"].unique()]
     n_marks    = len(mark_names)
-    n_rows     = (n_marks + 1) // 2
+    n_cols     = 3
+    n_rows     = (n_marks + n_cols - 1) // n_cols   # ceil division
 
-    fig, axes = plt.subplots(n_rows, 2, figsize=(8, 4 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
     axes = np.atleast_2d(axes).flatten()
 
     sw_mask = df["switch_cat"].isin(["B_to_A", "A_to_B"])
