@@ -1,5 +1,3 @@
-#!/lustre/isaac24/scratch/majagbe/envs/epp604_env/bin/python3
-
 import pandas as pd
 import numpy as np
 import pyBigWig

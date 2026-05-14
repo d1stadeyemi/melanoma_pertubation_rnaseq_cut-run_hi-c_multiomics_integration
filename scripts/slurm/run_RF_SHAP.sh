@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=03:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=logs/rf_shap_%j.out
 #SBATCH --error=logs/rf_shap_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
@@ -18,20 +18,21 @@ source $ANACONDA3_SH
 
 MERGED="data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt"
 CUTRUN="data/processed/cut_run_signal_table.txt"
-FIGS="results/exploratory"
+FIGS="results/exploratory_2"
 
-#conda activate multiomics-ml
+conda activate multiomics-ml
 
-#echo "=========================================="
-#echo " Epigenetic priming"
-#echo "=========================================="
-#python scripts/analysis/RF_SHAP.py \
-#    $CUTRUN $MERGED \
-#    --outdir $FIGS/RF_SHAP \
-#    --shap_dependence_partners "H3K27ac:H3K27me3" "H3K27me3:H3K4me3"
+echo "=========================================="
+echo " Epigenetic priming"
+echo "=========================================="
+python scripts/analysis/RF_SHAP.py \
+    $CUTRUN $MERGED \
+    --outdir $FIGS/RF_SHAP \
+    --include_ctcf \
+    --shap_dependence_partners H3K27ac:H3K27me3 H3K27me3:H3K4me3 CTCF:H3K27ac CTCF:H3K27me3
 
 
-#conda deactivate
+conda deactivate
 
 conda activate multiomics-r
 

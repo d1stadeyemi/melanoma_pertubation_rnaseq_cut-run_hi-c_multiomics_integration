@@ -23,7 +23,7 @@ echo " RF Permutation Test"
 echo "=========================================="
 
 python scripts/RF_permutation_test.py \
-    results/exploratory/RF_SHAP/Switch_classified.txt 
+    results/exploratory_2/RF_SHAP/Switch_classified.txt 
 # Other parameters (e.g. --n_perm, --n_jobs) have been set to their defaults in the script, 
 # but can be added here if desired.
 
