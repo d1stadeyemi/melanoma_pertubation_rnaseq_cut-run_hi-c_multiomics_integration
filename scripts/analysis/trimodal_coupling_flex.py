@@ -334,8 +334,12 @@ def plot_upset(df, modalities, outdir):
         axes = upset.plot(fig=fig)   # returns dict of internal axes
 
         # ── 6. Polish the axes ───────────────────────────────────────────────────
-        # 6a. Top bar panel y-label.
-        axes['intersections'].set_ylabel("Intersection size", fontsize=11)
+        # 6a. Top bar panel y-label + push first bar away from y-axis so
+        #     count labels don't overlap the spine.
+        inter_ax = axes['intersections']
+        inter_ax.set_ylabel("Intersection size", fontsize=11)
+        ix_min, ix_max = inter_ax.get_xlim()
+        inter_ax.set_xlim(ix_min - 0.4, ix_max)
 
         # 6b. Side totals panel: widen the data limit so the numeric labels
         #     drawn by show_counts don't get clipped at the edge. The totals
@@ -359,7 +363,7 @@ def plot_upset(df, modalities, outdir):
         matrix_ax.tick_params(axis='y', pad=8)
 
         # 6d. Format the legend created by style_subsets.
-        leg = axes['intersections'].get_legend()
+        leg = inter_ax.get_legend()
         if leg is not None:
             leg.set_frame_on(True)
             leg.set_bbox_to_anchor((1.0, 1.0))
