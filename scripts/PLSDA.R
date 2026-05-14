@@ -266,7 +266,7 @@ par(mar = c(5, 5, 4, 3))
 plotLoadings(
   plsda_res,
   comp    = 1,
-  method  = "median",
+  method  = "mean",
   contrib = "max",
   title   = "",
   legend.title = "Max-contributing\nswitch class"
@@ -283,7 +283,7 @@ par(mar = c(5, 5, 4, 3))
 plotLoadings(
   plsda_res,
   comp    = 1,
-  method  = "median",
+  method  = "mean",
   contrib = "max",
   title   = "",
   legend.title = "Max-contributing\nswitch class"
