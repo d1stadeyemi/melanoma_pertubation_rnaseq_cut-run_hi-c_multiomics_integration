@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=logs/rf_shap_%j.out
 #SBATCH --error=logs/rf_shap_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
@@ -34,13 +34,13 @@ python scripts/analysis/RF_SHAP.py \
 
 conda deactivate
 
-conda activate multiomics-r
+#conda activate multiomics-r
 
-Rscript scripts/analysis/PLSDA.R \
-    $FIGS/RF_SHAP/Switch_classified.txt \
-    $FIGS/PLSDA
+#Rscript scripts/analysis/PLSDA.R \
+#    $FIGS/RF_SHAP/Switch_classified.txt \
+#    $FIGS/PLSDA
 
-conda deactivate
+#conda deactivate
 
 echo "=========================================="
 echo " All analyses complete."

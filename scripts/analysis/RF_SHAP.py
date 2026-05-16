@@ -396,7 +396,7 @@ def run_rf_shap(df, mark_names, outdir, dependence_pairs=None):
           f"(= random PR baseline)")
 
     rf = RandomForestClassifier(
-        n_estimators=500, max_depth=6,
+        n_estimators=200, max_depth=6,
         class_weight="balanced", random_state=42, n_jobs=-1
     )
     cv    = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
