@@ -403,7 +403,7 @@ def test1_parental_vs_b10(df, outdir, switch_label="B_to_A"):
     ax.set_xticks([1, 2])
     ax.set_xticklabels(["Parental", "Bottom10"])
     ax.set_ylabel("log1p(H3K27me3 CPM signal)")
-    ax.set_title(f"H3K27me3 at {switch_label.replace('_', '→')} loci\n"
+    ax.set_title(f"H3K27me3 at {switch_label.replace('_to_', '→')} loci\n"
                  f"Parental vs Bottom10",
                  fontweight="bold", pad=10)
 
@@ -510,7 +510,7 @@ def test2_b10_vs_b10unc(df, outdir, switch_label="B_to_A"):
     ax.set_xticks([1, 2])
     ax.set_xticklabels(["Bottom10", "Bottom10+UNC"])
     ax.set_ylabel("log1p(H3K27me3 CPM signal)")
-    ax.set_title(f"H3K27me3 at {switch_label.replace('_', '→')} loci\n"
+    ax.set_title(f"H3K27me3 at {switch_label.replace('_to_', '→')} loci\n"
                  f"Bottom10 vs Bottom10+UNC",
                  fontweight="bold", pad=10)
 
