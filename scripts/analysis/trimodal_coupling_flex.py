@@ -5,21 +5,39 @@ Hi-C compartment is always included by default.
 You must specify at least one of --rna or --marks.
 
 Usage examples:
-    # RNA + H3K27me3 + Hi-C (default thresholds)
-    python scripts/trimodal_coupling.py merged.txt \
-        --rna --marks h3k27me3
+    # Default behavior — no exports
+    python scripts/analysis/trimodal_coupling_flex.py \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --rna --marks h3k27me3 h3k27ac
 
-    # RNA + all four marks + Hi-C
-    python scripts/trimodal_coupling.py merged.txt \
-        --rna --marks h3k27me3 h3k27ac h3k4me1 h3k9me3
+    # Concordant exports, both directions (bare flag — most common)
+    python scripts/analysis/trimodal_coupling_flex.py \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --rna --marks h3k27me3 h3k27ac h3k4me1 h3k9me3 \
+        --export_concordant
 
-    # H3K27me3 + H3K9me3 + Hi-C (no RNA)
-    python scripts/trimodal_coupling.py merged.txt \
-        --marks h3k27me3 h3k9me3
+    # All 6 files — both flags bare
+    python scripts/analysis/trimodal_coupling_flex.py \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --rna --marks h3k27me3 h3k27ac h3k4me1 h3k9me3 \
+        --export_concordant --export_nonconcordant
 
-    # Disable Hi-C
-    python scripts/trimodal_coupling.py merged.txt \
-        --rna --marks h3k27me3 --no_hic
+    # One direction only
+    python scripts/analysis/trimodal_coupling_flex.py \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --rna --marks h3k27me3 h3k27ac h3k4me1 h3k9me3 \
+        --export_concordant BtoA
+
+    # Mix-and-match: concordant both directions, nonconcordant only A→B
+    python scripts/analysis/trimodal_coupling_flex.py \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --rna --marks h3k27me3 h3k27ac h3k4me1 h3k9me3 \
+        --export_concordant \
+        --export_nonconcordant AtoB
+
+    # Future bin-mode (will fail cleanly today)
+    python scripts/analysis/trimodal_coupling_flex.py merged_bins.txt \
+        --rna --marks h3k27me3 --mode bins
 
 Available mark keys (case-insensitive):
     h3k27me3   -> b10_minus_parental_h3k27me3
@@ -110,6 +128,36 @@ def parse_args():
                    help="RNA: padj threshold (default 0.01)")
     p.add_argument("--me3_thresh",  type=float, default=0.05,
                    help="Epigenetic mark: |delta| threshold (default 0.05)")
+    
+    # ── Output / classification mode ──────────────────────────────────────────
+    p.add_argument("--mode",
+                   choices=["genes", "bins", "coordinates"],
+                   default="genes",
+                   help="Row classification mode (default: genes). "
+                        "'bins' and 'coordinates' require an input table keyed "
+                        "by genomic intervals rather than gene names.")
+
+    p.add_argument("--export_concordant",
+                   nargs="*",
+                   choices=["BtoA", "AtoB", "both"],
+                   metavar="DIR",
+                   help="Export concordance gene tables. Optional values: "
+                        "BtoA, AtoB, both. If the flag is given with no value, "
+                        "defaults to both directions. For each chosen direction, "
+                        "writes 2 files: all_concordant_<DIR>.txt (concordant in "
+                        "EVERY non-Hi-C modality) and concordant_<DIR>.txt "
+                        "(concordant in AT LEAST ONE non-Hi-C modality). "
+                        "Stable genes excluded.")
+
+    p.add_argument("--export_nonconcordant",
+                   nargs="*",
+                   choices=["BtoA", "AtoB", "both"],
+                   metavar="DIR",
+                   help="Export non-concordance gene tables. Optional values: "
+                        "BtoA, AtoB, both. If the flag is given with no value, "
+                        "defaults to both directions. For each chosen direction, "
+                        "writes nonconcordant_<DIR>.txt (compartment switched "
+                        "but NO concordant change in any non-Hi-C modality).")
 
     args = p.parse_args()
 
@@ -125,6 +173,27 @@ def parse_args():
             p.error(f"Unknown mark(s): {bad}. "
                     f"Choose from: {list(MARK_REGISTRY.keys())}")
         args.marks = [m.lower() for m in args.marks]
+
+    # Normalize export direction lists:
+    #   None         -> flag absent       -> []
+    #   []           -> flag bare         -> ["AtoB", "BtoA"]   (default: both)
+    #   ["both"]     -> expand            -> ["AtoB", "BtoA"]
+    #   ["BtoA"] etc -> as given (sorted, deduped)
+    def _expand_dirs(lst):
+        if lst is None:
+            return []
+        if len(lst) == 0:
+            return ["AtoB", "BtoA"]
+        out = set()
+        for d in lst:
+            if d == "both":
+                out.update(["BtoA", "AtoB"])
+            else:
+                out.add(d)
+        return sorted(out)
+
+    args.export_concordant    = _expand_dirs(args.export_concordant)
+    args.export_nonconcordant = _expand_dirs(args.export_nonconcordant)
 
     return args
 
@@ -429,20 +498,27 @@ def plot_spearman(df, modalities, outdir):
 # ══════════════════════════════════════════════════════════════════════════════
 def plot_concordance_bar(df, modalities, outdir):
     """
-    For genes with a Hi-C compartment call (B->A, A->B, Stable),
+    For genes with a directional Hi-C compartment call (B->A or A->B),
     compute the fraction that show concordant changes in each other modality.
 
     Concordance definition:
         B->A: other modality shows activation/loss direction
-        A->B: other modality shows repression/gain direction
+              (positive log2FC, positive Δactivating mark, negative Δrepressive mark)
+        A->B: opposite
 
-    Only runs if Hi-C is in modalities.
+    Stable-compartment genes are excluded — concordance is undefined for them.
+    Their counts are still reported to stdout for the record.
     """
     if "Hi-C Compartment" not in modalities:
         print("[INFO] Hi-C not included — skipping concordance bar.")
         return
 
     df["comp_dir"] = df.apply(get_comp_dir, axis=1)
+
+    # Report Stable count for the record (PI requested it not be plotted)
+    n_stable = (df["comp_dir"] == "Stable").sum()
+    print(f"[INFO] Stable-compartment rows excluded from concordance bar: "
+          f"{n_stable:,}")
 
     # Other modalities (excluding Hi-C)
     other_mods = {
@@ -454,20 +530,17 @@ def plot_concordance_bar(df, modalities, outdir):
         print("[INFO] No other modalities to compare — skipping concordance bar.")
         return
 
-    comp_dirs = ["B→A", "A→B", "Stable"]
+    comp_dirs = ["B→A", "A→B"]                       # Stable removed
     x         = np.arange(len(comp_dirs))
-    fig, ax = plt.subplots(figsize=(max(7, len(other_mods) * 2.5), 5))
+    fig, ax = plt.subplots(figsize=(max(6, len(other_mods) * 2.2), 5.2))
 
-    # Add an extra series: "All concordant" = genes concordant in EVERY
-    # non-Hi-C modality simultaneously. Renamed from "Both concordant" so
-    # it scales to >2 modalities.
-    n_series = len(other_mods) + 1                # +1 for "All concordant"
-    width    = 0.75 / n_series
+    # +1 series for "All concordant"
+    n_series = len(other_mods) + 1
+    width    = 0.78 / n_series
     offsets  = np.linspace(-(n_series - 1) * width / 2,
                             (n_series - 1) * width / 2,
                             n_series)
 
-    # Helper: per-modality concordance boolean (sign-aware, repressive-aware)
     def concordance_mask(sub, info, gd):
         delta_col = info["delta_col"]
         if not delta_col or delta_col not in df.columns:
@@ -482,7 +555,6 @@ def plot_concordance_bar(df, modalities, outdir):
 
     # Individual modality bars
     for (mod_name, info), offset in zip(other_mods.items(), offsets[:-1]):
-        color = info["color"]
         fracs = []
         for gd in comp_dirs:
             sub = df[df["comp_dir"] == gd]
@@ -491,11 +563,13 @@ def plot_concordance_bar(df, modalities, outdir):
                 fracs.append(0); continue
             mask = concordance_mask(sub, info, gd).fillna(False)
             fracs.append(mask.sum() / n * 100)
-        ax.bar(x + offset, fracs, width=width * 0.9,
-               color=color, label=f"Concordant {mod_name}",
-               edgecolor="white", linewidth=0.4)
+        bars = ax.bar(x + offset, fracs, width=width * 0.92,
+                      color=info["color"],
+                      label=f"Concordant {mod_name}",
+                      edgecolor="white", linewidth=0.4)
+        ax.bar_label(bars, fmt="%.1f%%", padding=2, fontsize=8.5)
 
-    # "All concordant" bar: gene must be concordant in EVERY non-Hi-C modality
+    # "All concordant" bar
     fracs_all = []
     for gd in comp_dirs:
         sub = df[df["comp_dir"] == gd]
@@ -506,31 +580,154 @@ def plot_concordance_bar(df, modalities, outdir):
         for info in other_mods.values():
             combined &= concordance_mask(sub, info, gd).fillna(False)
         fracs_all.append(combined.sum() / n * 100)
-    ax.bar(x + offsets[-1], fracs_all, width=width * 0.9,
-           color="#0A0B2C", label=f"All {len(other_mods)} concordant",
-           edgecolor="white", linewidth=0.4)
+    bars = ax.bar(x + offsets[-1], fracs_all, width=width * 0.92,
+                  color="#0A0B2C",
+                  label=f"All {len(other_mods)} concordant",
+                  edgecolor="white", linewidth=0.4)
+    ax.bar_label(bars, fmt="%.1f%%", padding=2, fontsize=8.5,
+                 fontweight="bold")
 
-    # Sample size annotations
+    # Sample size annotations under each x-category
+    ymin_text = -3
     for xi, gd in zip(x, comp_dirs):
         n = (df["comp_dir"] == gd).sum()
-        ax.text(xi, -3, f"n={n:,}", ha="center", va="top",
-                fontsize=8, color="#555555")
+        ax.text(xi, ymin_text, f"n={n:,}", ha="center", va="top",
+                fontsize=9, color="#444444")
 
     ax.set_xticks(x)
     ax.set_xticklabels(comp_dirs, fontsize=11)
     ax.axhline(0, color="black", lw=0.8)
-    ax.set_ylim(bottom=-6)
+
+    # Pad top so bar labels don't get clipped
+    top_max = max([*fracs_all,
+                   *(b.get_height() for c in ax.containers for b in c)])
+    ax.set_ylim(bottom=-6, top=top_max * 1.15 + 2)
+
     ax.set_ylabel("% of genes with concordant change", labelpad=6)
-    ax.set_xlabel("Compartment Change Direction", labelpad=6)
+    ax.set_xlabel("Compartment change direction", labelpad=12)
     ax.set_title(
         "Directional Concordance with Hi-C Compartment Switch\n"
         "Parental → Bottom10",
         fontweight="bold", pad=10
     )
-    ax.legend(frameon=False, fontsize=9, loc="upper right")
-    plt.tight_layout()
+    ax.legend(frameon=False, fontsize=9,
+              loc="upper left", bbox_to_anchor=(1.01, 1.0),
+              borderaxespad=0)
+    plt.tight_layout(rect=[0, 0, 0.88, 1])
     save_fig(fig, outdir, "Fig2c_concordance_bar")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPORT: concordance / non-concordance gene tables
+# ══════════════════════════════════════════════════════════════════════════════
+def export_concordance_tables(df, modalities, id_cols, outdir,
+                              concordant_dirs=None,
+                              nonconcordant_dirs=None):
+    """
+    Write per-direction gene tables for downstream GO / GSEA / manual review.
+
+    Requires Hi-C in modalities; uses df["comp_dir"] which must already
+    be populated by plot_concordance_bar (or computed here if missing).
+
+    Schema for every output file:
+        id_cols + standard stat/delta columns + comp_dir + per-modality
+        concordance booleans.
+
+    Output files (only those whose flag is set):
+        all_concordant_BtoA.txt / all_concordant_AtoB.txt
+            -> concordant in EVERY non-Hi-C modality
+        concordant_BtoA.txt     / concordant_AtoB.txt
+            -> concordant in AT LEAST ONE non-Hi-C modality
+        nonconcordant_BtoA.txt  / nonconcordant_AtoB.txt
+            -> compartment switched, but NO modality is concordant
+    """
+    if not (concordant_dirs or nonconcordant_dirs):
+        return
+    if "Hi-C Compartment" not in modalities:
+        print("[WARN] Cannot export concordance tables without Hi-C. Skipping.")
+        return
+
+    other_mods = {n: i for n, i in modalities.items() if n != "Hi-C Compartment"}
+    if not other_mods:
+        print("[WARN] No non-Hi-C modalities — nothing to export.")
+        return
+
+    # Ensure comp_dir is present
+    if "comp_dir" not in df.columns:
+        df["comp_dir"] = df.apply(get_comp_dir, axis=1)
+
+    # Shared concordance mask helper (sign-aware, repressive-aware)
+    def concordance_mask_full(info, comp_dir_series):
+        delta_col = info["delta_col"]
+        if not delta_col or delta_col not in df.columns:
+            return pd.Series(False, index=df.index)
+        vals       = pd.to_numeric(df[delta_col], errors="coerce")
+        repressive = any(k in delta_col.lower() for k in ["me3", "h3k9", "unc"])
+        out = pd.Series(False, index=df.index)
+        if repressive:
+            out.loc[comp_dir_series == "B→A"] = (vals < 0).loc[comp_dir_series == "B→A"]
+            out.loc[comp_dir_series == "A→B"] = (vals > 0).loc[comp_dir_series == "A→B"]
+        else:
+            out.loc[comp_dir_series == "B→A"] = (vals > 0).loc[comp_dir_series == "B→A"]
+            out.loc[comp_dir_series == "A→B"] = (vals < 0).loc[comp_dir_series == "A→B"]
+        return out.fillna(False)
+
+    # Per-modality concordance booleans (added as columns to the export)
+    per_mod_conc_cols = {}
+    for name, info in other_mods.items():
+        col = f"_conc_{name.replace(' ', '_').replace('-', '_')}"
+        df[col] = concordance_mask_full(info, df["comp_dir"])
+        per_mod_conc_cols[name] = col
+
+    # Aggregate masks
+    any_conc = pd.Series(False, index=df.index)
+    all_conc = pd.Series(True,  index=df.index)
+    for col in per_mod_conc_cols.values():
+        any_conc |= df[col]
+        all_conc &= df[col]
+    df["_concordant_any"] = any_conc
+    df["_concordant_all"] = all_conc
+
+    # Build standard schema: id_cols + common stat/delta columns + flags
+    standard_cols = [
+        "padj", "pvalue", "log2FC", "baseMean", "strand",
+        "b10_minus_parental_h3k27ac",
+        "b10_minus_parental_h3k27me3",
+        "b10_minus_parental_h3k4me1",
+        "b10_minus_parental_h3k9me3",
+        "b10_minus_parental_unc_h3k27me3",
+    ]
+    standard_cols = [c for c in standard_cols if c in df.columns]
+    flag_cols     = ["comp_dir", "_concordant_any", "_concordant_all"] + \
+                    list(per_mod_conc_cols.values())
+    export_cols   = id_cols + standard_cols + flag_cols
+
+    # Output dir
+    export_dir = os.path.join(outdir, "concordance_genes")
+    os.makedirs(export_dir, exist_ok=True)
+
+    def write(subset_df, fname):
+        path = os.path.join(export_dir, fname)
+        subset_df[export_cols].to_csv(path, sep="\t", index=False)
+        print(f"  Exported {len(subset_df):>6,} rows -> {path}")
+
+    print(f"\n[INFO] Writing concordance exports -> {export_dir}")
+
+    # Map from CLI direction strings to the symbol used in comp_dir
+    dir_map = {"BtoA": "B→A", "AtoB": "A→B"}
+
+    if concordant_dirs:
+        for fdir in concordant_dirs:
+            label_dir = dir_map[fdir]
+            sub_all = df[(df["comp_dir"] == label_dir) & df["_concordant_all"]]
+            sub_any = df[(df["comp_dir"] == label_dir) & df["_concordant_any"]]
+            write(sub_all, f"all_concordant_{fdir}.txt")
+            write(sub_any, f"concordant_{fdir}.txt")
+
+    if nonconcordant_dirs:
+        for fdir in nonconcordant_dirs:
+            label_dir = dir_map[fdir]
+            sub_none = df[(df["comp_dir"] == label_dir) & (~df["_concordant_any"])]
+            write(sub_none, f"nonconcordant_{fdir}.txt")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
@@ -546,6 +743,28 @@ def main():
     print("[INFO] Loading merged table...")
     df = pd.read_csv(args.merged_file, sep="\t", low_memory=False)
     print(f"  {len(df):,} rows x {len(df.columns)} columns")
+
+    # ── Resolve row-identifier columns based on --mode ───────────────────────
+    if args.mode == "genes":
+        id_cols = [c for c in ["gene_name", "gene_id"] if c in df.columns]
+        if not id_cols:
+            sys.exit("[ERROR] --mode genes requires a 'gene_name' or "
+                     "'gene_id' column in the merged table.")
+    elif args.mode == "bins":
+        id_cols = [c for c in ["bin_id", "chrom", "start", "end"]
+                   if c in df.columns]
+        if "bin_id" not in df.columns:
+            sys.exit("[ERROR] --mode bins requires a 'bin_id' column. "
+                     "Re-merge inputs at bin resolution before running.")
+    else:  # coordinates
+        id_cols = [c for c in ["chrom", "start", "end", "strand"]
+                   if c in df.columns]
+        if not {"chrom", "start", "end"}.issubset(df.columns):
+            sys.exit("[ERROR] --mode coordinates requires 'chrom', 'start', "
+                     "and 'end' columns in the merged table.")
+
+    print(f"[INFO] Classification mode: {args.mode} "
+          f"(ID columns: {id_cols})")
 
     # Build modality definitions and add boolean changed columns to df
     modalities = build_modalities(df, args)
@@ -570,6 +789,14 @@ def main():
 
     print("[INFO] Generating Fig 2c: Concordance bar chart...")
     plot_concordance_bar(df, modalities, fig_outdir)
+
+    if args.export_concordant or args.export_nonconcordant:
+        print("\n[INFO] Exporting concordance gene tables...")
+        export_concordance_tables(
+            df, modalities, id_cols, fig_outdir,
+            concordant_dirs=args.export_concordant,
+            nonconcordant_dirs=args.export_nonconcordant,
+        )
 
     print(f"\n[INFO] Q2 complete -> {os.path.abspath(fig_outdir)}")
 
