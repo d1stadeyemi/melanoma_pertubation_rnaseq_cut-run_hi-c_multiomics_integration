@@ -39,6 +39,18 @@ Usage examples:
     python scripts/analysis/trimodal_coupling_flex.py merged_bins.txt \
         --rna --marks h3k27me3 --mode bins
 
+    # Summary only — get the counts without per-gene exports
+    python scripts/analysis/trimodal_coupling_flex.py \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --rna --marks h3k27me3 h3k27ac \
+        --export_summary
+
+    # Full deliverable: 6 gene tables + summary
+    python scripts/analysis/trimodal_coupling_flex.py \
+        data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --rna --marks h3k27me3 h3k27ac h3k4me1 h3k9me3 \
+        --export_concordant --export_nonconcordant --export_summary
+        
 Available mark keys (case-insensitive):
     h3k27me3   -> b10_minus_parental_h3k27me3
     h3k27ac    -> b10_minus_parental_h3k27ac
@@ -158,6 +170,13 @@ def parse_args():
                         "defaults to both directions. For each chosen direction, "
                         "writes nonconcordant_<DIR>.txt (compartment switched "
                         "but NO concordant change in any non-Hi-C modality).")
+    
+    p.add_argument("--export_summary", action="store_true",
+                   help="Export a summary table of concordance counts "
+                        "(all 6 categories: all_concordant / concordant / "
+                        "nonconcordant × BtoA / AtoB). Written even when the "
+                        "per-gene exports are not requested. File: "
+                        "concordance_summary.txt")
 
     args = p.parse_args()
 
@@ -515,7 +534,7 @@ def plot_concordance_bar(df, modalities, outdir):
 
     df["comp_dir"] = df.apply(get_comp_dir, axis=1)
 
-    # Report Stable count for the record (PI requested it not be plotted)
+    # Report Stable count for the record, even though they are excluded from the plot.
     n_stable = (df["comp_dir"] == "Stable").sum()
     print(f"[INFO] Stable-compartment rows excluded from concordance bar: "
           f"{n_stable:,}")
@@ -567,7 +586,7 @@ def plot_concordance_bar(df, modalities, outdir):
                       color=info["color"],
                       label=f"Concordant {mod_name}",
                       edgecolor="white", linewidth=0.4)
-        ax.bar_label(bars, fmt="%.1f%%", padding=2, fontsize=8.5)
+        ax.bar_label(bars, fmt="%.1f%%", padding=2, fontsize=7)
 
     # "All concordant" bar
     fracs_all = []
@@ -730,6 +749,99 @@ def export_concordance_tables(df, modalities, id_cols, outdir,
             write(sub_none, f"nonconcordant_{fdir}.txt")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# EXPORT: concordance summary table
+# ══════════════════════════════════════════════════════════════════════════════
+def export_concordance_summary(df, modalities, outdir):
+    """
+    Write a one-file summary of all six concordance categories.
+
+    Independent of --export_concordant / --export_nonconcordant: produces
+    counts for every category whether or not the per-gene tables were written.
+
+    Columns (long format):
+        direction          - BtoA | AtoB
+        category           - all_concordant | concordant_any | nonconcordant
+        n_genes            - number of genes in that bucket
+        total_in_direction - total genes with that compartment switch direction
+        percent            - 100 * n_genes / total_in_direction
+
+    Requires Hi-C in modalities and the per-modality concordance flags
+    populated by export_concordance_tables(). If those flags aren't on df
+    yet, this function computes them transiently.
+    """
+    if "Hi-C Compartment" not in modalities:
+        print("[WARN] Cannot summarise concordance without Hi-C. Skipping.")
+        return
+
+    other_mods = {n: i for n, i in modalities.items() if n != "Hi-C Compartment"}
+    if not other_mods:
+        print("[WARN] No non-Hi-C modalities — nothing to summarise.")
+        return
+
+    # Ensure comp_dir + _concordant_any/_concordant_all exist. If the user
+    # ran --export_summary without --export_concordant/--export_nonconcordant,
+    # the aggregate flags won't be on df yet; compute them transiently.
+    if "comp_dir" not in df.columns:
+        df["comp_dir"] = df.apply(get_comp_dir, axis=1)
+
+    if "_concordant_any" not in df.columns or "_concordant_all" not in df.columns:
+        def _mask(info):
+            delta_col = info["delta_col"]
+            if not delta_col or delta_col not in df.columns:
+                return pd.Series(False, index=df.index)
+            vals = pd.to_numeric(df[delta_col], errors="coerce")
+            repressive = any(k in delta_col.lower() for k in ["me3", "h3k9", "unc"])
+            out = pd.Series(False, index=df.index)
+            cd = df["comp_dir"]
+            if repressive:
+                out.loc[cd == "B→A"] = (vals < 0).loc[cd == "B→A"]
+                out.loc[cd == "A→B"] = (vals > 0).loc[cd == "A→B"]
+            else:
+                out.loc[cd == "B→A"] = (vals > 0).loc[cd == "B→A"]
+                out.loc[cd == "A→B"] = (vals < 0).loc[cd == "A→B"]
+            return out.fillna(False)
+
+        any_conc = pd.Series(False, index=df.index)
+        all_conc = pd.Series(True,  index=df.index)
+        for info in other_mods.values():
+            m = _mask(info)
+            any_conc |= m
+            all_conc &= m
+        df["_concordant_any"] = any_conc
+        df["_concordant_all"] = all_conc
+
+    # Build the long-format summary
+    rows = []
+    for label_dir, fdir in [("B→A", "BtoA"), ("A→B", "AtoB")]:
+        sub = df[df["comp_dir"] == label_dir]
+        total = len(sub)
+
+        n_all_conc = int(sub["_concordant_all"].sum())
+        n_any_conc = int(sub["_concordant_any"].sum())
+        n_none     = int((~sub["_concordant_any"]).sum())
+
+        def pct(n):
+            return round(100 * n / total, 3) if total else 0.0
+
+        rows.append([fdir, "all_concordant",  n_all_conc, total, pct(n_all_conc)])
+        rows.append([fdir, "concordant_any",  n_any_conc, total, pct(n_any_conc)])
+        rows.append([fdir, "nonconcordant",   n_none,     total, pct(n_none)])
+
+    summary = pd.DataFrame(
+        rows,
+        columns=["direction", "category", "n_genes",
+                 "total_in_direction", "percent"],
+    )
+
+    # Output
+    os.makedirs(outdir, exist_ok=True)
+    out_path = os.path.join(outdir, "concordance_summary.txt")
+    summary.to_csv(out_path, sep="\t", index=False)
+
+    print(f"\n[INFO] Concordance summary -> {out_path}")
+    print(summary.to_string(index=False))
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
@@ -797,6 +909,9 @@ def main():
             concordant_dirs=args.export_concordant,
             nonconcordant_dirs=args.export_nonconcordant,
         )
+
+    if args.export_summary:
+        export_concordance_summary(df, modalities, fig_outdir)
 
     print(f"\n[INFO] Q2 complete -> {os.path.abspath(fig_outdir)}")
 
