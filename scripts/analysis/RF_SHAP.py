@@ -707,7 +707,7 @@ def _run_rf_cv(X, y, seed=42):
                             std_ap, rf_refit (RF fit on the full data).
     """
     rf = RandomForestClassifier(
-        n_estimators=100, max_depth=None,
+        n_estimators=1000, max_depth=None,
         class_weight="balanced_subsample", random_state=seed, n_jobs=-1
     )
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
