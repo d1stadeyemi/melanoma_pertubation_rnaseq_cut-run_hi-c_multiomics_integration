@@ -1,34 +1,24 @@
 """
 Permutation Test — empirical null distribution for RF ROC-AUC and PR-AUC.
 
-Tests the null hypothesis that Parental epigenetic marks have NO relationship
-to compartment switching. Shuffles labels n_perm times, refits the RF on each
-shuffle, and compares the real cross-validated AUCs against the shuffled null.
-
-Reuses the gene table produced by RF_SHAP.py (Switch_classified.txt) so the
-exact same genes, same labels, and same features go into both analyses.
+Mirrors the --comparison flag from RF_SHAP.py:
+    A     : permutation on Stable_A vs A->B subset
+    B     : permutation on Stable_B vs B->A subset
+    both  : run A and B separately; 4-panel figure (DEFAULT)
+    all   : original switcher-vs-stable framing on full dataset
 
 Usage:
     python scripts/RF_permutation_test.py \
         results/exploratory/RF_SHAP/Switch_classified.txt \
         --outdir results/exploratory/RF_permutation_test \
+        --comparison both \
         --n_perm 100 \
         --n_jobs 8
 
-Outputs (in --outdir):
-    Fig1c_permutation_null.pdf/png   ROC-AUC + PR-AUC null vs observed
-    Permutation_results.txt          per-permutation AUCs + empirical p-values
-    Permutation_summary.txt          observed AUC, null mean/SD, empirical p
-
-Runtime guidance (5-fold CV, 500-tree RF, 4 marks, ~21k genes):
-    n_perm = 100   ~1.0-1.5 hr on 8 cores  (rotation report)
-    n_perm = 1000  ~10-15 hr on 8 cores    (overnight, manuscript)
-
-SLURM submission template:
-    #SBATCH --nodes=1
-    #SBATCH --time=24:00:00
-    #SBATCH --ntasks-per-node=8
-    #SBATCH --mem=32G
+Outputs (per mode):
+    Fig1c_permutation_null_<mode>.pdf/png
+    Permutation_results_<mode>.txt
+    Permutation_summary_<mode>.txt
 """
 
 import argparse
@@ -60,13 +50,23 @@ plt.rcParams.update({
     "figure.facecolor":  "white",
 })
 
+# Same as RF_SHAP.py
+COMPARISON_SPEC = {
+    "A": {"neg": "Stable_A", "pos": "A_to_B", "label": "Stable_A vs A\u2192B"},
+    "B": {"neg": "Stable_B", "pos": "B_to_A", "label": "Stable_B vs B\u2192A"},
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="RF permutation test")
-    p.add_argument("classified_file", default="results/exploratory/RF_SHAP/Switch_classified.txt",
+    p.add_argument("classified_file",
                    help="Path to Switch_classified.txt from RF_SHAP.py")
-    p.add_argument("--outdir", default="results/exploratory/RF_permutation_test",
+    p.add_argument("--outdir",
+                   default="results/exploratory/RF_permutation_test",
                    help="Output directory")
+    p.add_argument("--comparison",
+                   choices=["A", "B", "both", "all"], default="both",
+                   help="Match this to the RF_SHAP.py mode used. Default: both")
     p.add_argument("--n_perm", type=int, default=100,
                    help="Number of label permutations (default: 100)")
     p.add_argument("--n_jobs", type=int, default=-1,
@@ -77,195 +77,261 @@ def parse_args():
 
 
 def cv_aucs(X, y, n_jobs, seed):
-    """
-    Run a single 5-fold CV pass of the RF and return (mean ROC-AUC, mean PR-AUC).
-    """
+    """5-fold CV RF -> (mean ROC-AUC, mean PR-AUC)."""
     rf = RandomForestClassifier(
         n_estimators=500, max_depth=6,
-        class_weight="balanced", random_state=seed, n_jobs=n_jobs
+        class_weight="balanced", random_state=seed, n_jobs=n_jobs,
     )
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
-    roc_per_fold = []
-    pr_per_fold  = []
-    for train_idx, test_idx in cv.split(X, y):
-        rf.fit(X[train_idx], y[train_idx])
-        y_prob = rf.predict_proba(X[test_idx])[:, 1]
-        roc_per_fold.append(roc_auc_score(y[test_idx], y_prob))
-        pr_per_fold.append(average_precision_score(y[test_idx], y_prob))
+    roc_per_fold, pr_per_fold = [], []
+    for tr_idx, te_idx in cv.split(X, y):
+        rf.fit(X[tr_idx], y[tr_idx])
+        y_prob = rf.predict_proba(X[te_idx])[:, 1]
+        roc_per_fold.append(roc_auc_score(y[te_idx], y_prob))
+        pr_per_fold.append(average_precision_score(y[te_idx], y_prob))
     return float(np.mean(roc_per_fold)), float(np.mean(pr_per_fold))
 
 
 def empirical_p(observed, null_arr):
-    """
-    One-sided empirical p-value: P(null >= observed).
-    With +1 correction (Phipson & Smyth 2010) to avoid p = 0.
-    """
+    """One-sided empirical p with Phipson & Smyth +1 correction."""
     n = len(null_arr)
     return (np.sum(null_arr >= observed) + 1) / (n + 1)
+
+
+def build_subset(df, comparison, mark_names):
+    """
+    Build (X, y, label) tuples per comparison sub-mode. Returns a dict.
+        all  -> 1 entry under key 'all'
+        A    -> 1 entry under key 'A'
+        B    -> 1 entry under key 'B'
+        both -> 2 entries, 'A' and 'B'
+    """
+    out = {}
+    if comparison == "all":
+        sub = df[df["switch_cat"].isin(
+            ["B_to_A", "A_to_B", "Stable_A", "Stable_B"]
+        )].dropna(subset=mark_names).copy()
+        sub["is_switcher"] = sub["switch_cat"].isin(
+            ["B_to_A", "A_to_B"]
+        ).astype(int)
+        X = sub[mark_names].values
+        y = sub["is_switcher"].values
+        out["all"] = (X, y, "Switchers vs Stable")
+        return out
+
+    comps = ["A", "B"] if comparison == "both" else [comparison]
+    for comp in comps:
+        spec = COMPARISON_SPEC[comp]
+        sub = df[df["switch_cat"].isin([spec["neg"], spec["pos"]])] \
+                .dropna(subset=mark_names).copy()
+        sub["is_switcher"] = (sub["switch_cat"] == spec["pos"]).astype(int)
+        X = sub[mark_names].values
+        y = sub["is_switcher"].values
+        out[comp] = (X, y, spec["label"])
+    return out
+
+
+def run_permutation(X, y, n_perm, n_jobs, seed, label):
+    """Run observed CV + permutation null. Returns dict of arrays + stats."""
+    print(f"\n[INFO] === Comparison: {label} ===")
+    print(f"[INFO] N={len(X)}, positive={y.sum()}, negative={(y == 0).sum()}, "
+          f"prevalence={y.mean():.3f}")
+
+    print("[INFO] Computing OBSERVED 5-fold CV AUCs...")
+    t0 = time.time()
+    obs_roc, obs_pr = cv_aucs(X, y, n_jobs, seed=seed)
+    print(f"[INFO] Observed ROC-AUC = {obs_roc:.4f}")
+    print(f"[INFO] Observed PR-AUC  = {obs_pr:.4f}")
+    print(f"[INFO] Observed run took {(time.time() - t0):.1f} s")
+
+    print(f"[INFO] Running {n_perm} label permutations...")
+    rng = np.random.default_rng(seed)
+    null_roc = np.zeros(n_perm)
+    null_pr  = np.zeros(n_perm)
+    t_start = time.time()
+    for i in range(n_perm):
+        y_shuffled = rng.permutation(y)
+        roc_i, pr_i = cv_aucs(X, y_shuffled, n_jobs,
+                              seed=seed + i + 1)
+        null_roc[i] = roc_i
+        null_pr[i]  = pr_i
+        if (i + 1) % 10 == 0 or i == 0:
+            elapsed  = time.time() - t_start
+            per_perm = elapsed / (i + 1)
+            eta = per_perm * (n_perm - (i + 1))
+            print(f"  perm {i + 1:>4d}/{n_perm}  "
+                  f"ROC={roc_i:.3f} PR={pr_i:.3f}  "
+                  f"({elapsed/60:.1f} min elapsed; ETA {eta/60:.1f} min)")
+    total_min = (time.time() - t_start) / 60
+    print(f"[INFO] Permutations complete in {total_min:.1f} min")
+
+    p_roc = empirical_p(obs_roc, null_roc)
+    p_pr  = empirical_p(obs_pr,  null_pr)
+    print(f"[INFO] Null ROC: mean={null_roc.mean():.4f} SD={null_roc.std():.4f}")
+    print(f"[INFO] Null PR : mean={null_pr.mean():.4f}  SD={null_pr.std():.4f}")
+    print(f"[INFO] empirical p (ROC) = {p_roc:.4g}")
+    print(f"[INFO] empirical p (PR)  = {p_pr:.4g}")
+
+    return {
+        "label": label,
+        "obs_roc": obs_roc, "obs_pr": obs_pr,
+        "null_roc": null_roc, "null_pr": null_pr,
+        "p_roc": p_roc, "p_pr": p_pr,
+        "prevalence": float(y.mean()),
+    }
+
+
+def save_tables(res, mode_key, outdir, n_perm):
+    """Per-mode permutation results + summary tables."""
+    perm_df = pd.DataFrame({
+        "permutation":  np.arange(1, n_perm + 1),
+        "null_ROC_AUC": res["null_roc"],
+        "null_PR_AUC":  res["null_pr"],
+    })
+    perm_path = os.path.join(outdir, f"Permutation_results_{mode_key}.txt")
+    perm_df.to_csv(perm_path, sep="\t", index=False)
+    print(f"  Saved -> {perm_path}")
+
+    summary = pd.DataFrame([
+        {"metric": "ROC-AUC", "comparison": res["label"],
+         "observed": res["obs_roc"],
+         "null_mean": res["null_roc"].mean(),
+         "null_sd":   res["null_roc"].std(),
+         "null_min":  res["null_roc"].min(),
+         "null_max":  res["null_roc"].max(),
+         "n_perm":    n_perm,
+         "empirical_p_one_sided": res["p_roc"]},
+        {"metric": "PR-AUC",  "comparison": res["label"],
+         "observed": res["obs_pr"],
+         "null_mean": res["null_pr"].mean(),
+         "null_sd":   res["null_pr"].std(),
+         "null_min":  res["null_pr"].min(),
+         "null_max":  res["null_pr"].max(),
+         "n_perm":    n_perm,
+         "empirical_p_one_sided": res["p_pr"]},
+    ])
+    summary_path = os.path.join(outdir, f"Permutation_summary_{mode_key}.txt")
+    summary.to_csv(summary_path, sep="\t", index=False)
+    print(f"  Saved -> {summary_path}")
+
+
+def _draw_null_panel(ax, null_arr, observed, prev_for_random, p_emp,
+                      n_perm, metric_label, random_label):
+    """Helper: one null-distribution histogram panel."""
+    ax.hist(null_arr, bins=30, color="#85C1E9",
+            edgecolor="white", linewidth=0.5, alpha=0.95)
+    ax.axvline(observed, color="#C0392B", lw=2.0,
+               label=f"Observed = {observed:.3f}")
+    ax.axvline(null_arr.mean(), color="black", lw=1.0, linestyle="--",
+               label=f"Null mean = {null_arr.mean():.3f}")
+    ax.axvline(prev_for_random, color="grey", lw=0.8, linestyle=":",
+               label=random_label)
+    ax.set_xlabel(f"{metric_label} (5-fold CV)", labelpad=6)
+    ax.set_ylabel("Permutations", labelpad=6)
+    ax.set_title(
+        f"{metric_label} Null Distribution\n"
+        f"empirical p = {p_emp:.3g} (n = {n_perm})",
+        fontweight="bold", pad=8,
+    )
+    ax.legend(frameon=False, fontsize=8.5, loc="upper right")
+
+
+def plot_nulls(results_by_mode, outdir, comparison, n_perm):
+    """
+    Mode A/B/all: 1x2 figure (ROC null + PR null).
+    Mode both:    2x2 figure -> top row A, bottom row B.
+    """
+    if comparison in ("A", "B", "all"):
+        res = results_by_mode[comparison]
+        fig, (ax_roc, ax_pr) = plt.subplots(1, 2, figsize=(11, 4.5))
+        _draw_null_panel(ax_roc, res["null_roc"], res["obs_roc"], 0.5,
+                          res["p_roc"], n_perm, "ROC-AUC", "Random (0.5)")
+        _draw_null_panel(ax_pr, res["null_pr"],  res["obs_pr"],
+                          res["prevalence"], res["p_pr"], n_perm,
+                          "PR-AUC",
+                          f"Random ({res['prevalence']:.3f})")
+        fig.suptitle(
+            f"Permutation Test: {res['label']}",
+            fontweight="bold", fontsize=12, y=1.02,
+        )
+        plt.tight_layout()
+        for ext in ("pdf", "png"):
+            out = os.path.join(
+                outdir, f"Fig1c_permutation_null_{comparison}.{ext}"
+            )
+            fig.savefig(out, bbox_inches="tight", pad_inches=0.05, dpi=600)
+            print(f"  Saved -> {out}")
+        plt.close(fig)
+        return
+
+    # both -> 2x2
+    fig, axes = plt.subplots(2, 2, figsize=(11, 9))
+    for r_idx, comp in enumerate(["A", "B"]):
+        res = results_by_mode[comp]
+        _draw_null_panel(axes[r_idx, 0], res["null_roc"], res["obs_roc"], 0.5,
+                          res["p_roc"], n_perm, "ROC-AUC", "Random (0.5)")
+        _draw_null_panel(axes[r_idx, 1], res["null_pr"],  res["obs_pr"],
+                          res["prevalence"], res["p_pr"], n_perm,
+                          "PR-AUC",
+                          f"Random ({res['prevalence']:.3f})")
+        axes[r_idx, 0].set_title(
+            axes[r_idx, 0].get_title() + f"\n[{res['label']}]",
+            fontweight="bold", pad=8,
+        )
+        axes[r_idx, 1].set_title(
+            axes[r_idx, 1].get_title() + f"\n[{res['label']}]",
+            fontweight="bold", pad=8,
+        )
+    fig.suptitle(
+        "Permutation Test: Parental Marks vs Compartment Switching"
+        "\nCompartment-resolved (A on top, B on bottom)",
+        fontweight="bold", fontsize=12, y=1.00,
+    )
+    plt.tight_layout()
+    for ext in ("pdf", "png"):
+        out = os.path.join(outdir, f"Fig1c_permutation_null_both.{ext}")
+        fig.savefig(out, bbox_inches="tight", pad_inches=0.05, dpi=600)
+        print(f"  Saved -> {out}")
+    plt.close(fig)
 
 
 def main():
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
 
-    # ── Load classified gene table from RF_SHAP.py ───────────────────────────
     print(f"[INFO] Loading {args.classified_file} ...")
     df = pd.read_csv(args.classified_file, sep="\t", low_memory=False)
 
-    # Detect mark columns (4 standard + optional CTCF)
     candidate_marks = ["H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3", "CTCF"]
     mark_names = [m for m in candidate_marks if m in df.columns]
     if len(mark_names) < 2:
         sys.exit("[ERROR] Need at least 2 mark columns in classified file.")
     print(f"[INFO] Marks: {mark_names}")
+    print(f"[INFO] Comparison mode: {args.comparison}")
 
-    df = df[df["switch_cat"].isin(
-        ["B_to_A", "A_to_B", "Stable_A", "Stable_B"]
-    )].dropna(subset=mark_names).copy()
-    df["is_switcher"] = df["switch_cat"].isin(["B_to_A", "A_to_B"]).astype(int)
+    subsets = build_subset(df, args.comparison, mark_names)
+    if not subsets:
+        sys.exit("[ERROR] No subsets built; check --comparison.")
 
-    X = df[mark_names].values
-    y = df["is_switcher"].values
-    print(f"[INFO] N genes: {len(X):,}  Switchers: {y.sum():,}  "
-          f"Stable: {(y == 0).sum():,}")
-    print(f"[INFO] Positive prevalence: {y.mean():.3f}")
+    results_by_mode = {}
+    for key, (X, y, label) in subsets.items():
+        if len(X) < 50 or y.sum() < 5:
+            print(f"[WARN] Insufficient data for permutation ({key}). "
+                  f"Skipping.")
+            continue
+        res = run_permutation(X, y, args.n_perm, args.n_jobs,
+                               args.seed, label)
+        results_by_mode[key] = res
+        save_tables(res, key, args.outdir, args.n_perm)
 
-    # ── 1. Observed AUCs ─────────────────────────────────────────────────────
-    print("\n[INFO] Computing OBSERVED 5-fold CV AUCs (no permutation)...")
-    t0 = time.time()
-    obs_roc, obs_pr = cv_aucs(X, y, args.n_jobs, seed=args.seed)
-    print(f"[INFO] Observed ROC-AUC = {obs_roc:.4f}")
-    print(f"[INFO] Observed PR-AUC  = {obs_pr:.4f}")
-    print(f"[INFO] Observed run took {(time.time() - t0):.1f} s")
+    if not results_by_mode:
+        sys.exit("[ERROR] No permutation results produced.")
 
-    # ── 2. Permutation null ──────────────────────────────────────────────────
-    print(f"\n[INFO] Running {args.n_perm} label permutations...")
-    rng = np.random.default_rng(args.seed)
-    null_roc = np.zeros(args.n_perm)
-    null_pr  = np.zeros(args.n_perm)
+    print("\n[INFO] Plotting null distributions...")
+    plot_nulls(results_by_mode, args.outdir, args.comparison, args.n_perm)
 
-    t_start = time.time()
-    for i in range(args.n_perm):
-        y_shuffled = rng.permutation(y)
-        # Use a different RF seed per permutation so the null reflects both
-        # label-shuffling noise and model stochasticity.
-        roc_i, pr_i = cv_aucs(X, y_shuffled, args.n_jobs,
-                              seed=args.seed + i + 1)
-        null_roc[i] = roc_i
-        null_pr[i]  = pr_i
-
-        # Progress every 10
-        if (i + 1) % 10 == 0 or i == 0:
-            elapsed = time.time() - t_start
-            per_perm = elapsed / (i + 1)
-            eta = per_perm * (args.n_perm - (i + 1))
-            print(f"  perm {i+1:>4d}/{args.n_perm}  "
-                  f"ROC={roc_i:.3f}  PR={pr_i:.3f}  "
-                  f"({elapsed/60:.1f} min elapsed; ETA {eta/60:.1f} min)")
-
-    total_min = (time.time() - t_start) / 60
-    print(f"[INFO] Permutations complete in {total_min:.1f} min")
-
-    # ── 3. Empirical p-values ────────────────────────────────────────────────
-    p_roc = empirical_p(obs_roc, null_roc)
-    p_pr  = empirical_p(obs_pr,  null_pr)
-
-    print(f"\n[INFO] Null ROC-AUC: mean = {null_roc.mean():.4f}  "
-          f"SD = {null_roc.std():.4f}")
-    print(f"[INFO] Null PR-AUC : mean = {null_pr.mean():.4f}  "
-          f"SD = {null_pr.std():.4f}")
-    print(f"[INFO] Observed ROC-AUC = {obs_roc:.4f}  "
-          f"empirical p = {p_roc:.4g}")
-    print(f"[INFO] Observed PR-AUC  = {obs_pr:.4f}  "
-          f"empirical p = {p_pr:.4g}")
-
-    # ── 4. Save per-permutation table ────────────────────────────────────────
-    perm_df = pd.DataFrame({
-        "permutation": np.arange(1, args.n_perm + 1),
-        "null_ROC_AUC": null_roc,
-        "null_PR_AUC":  null_pr,
-    })
-    perm_path = os.path.join(args.outdir, "Permutation_results.txt")
-    perm_df.to_csv(perm_path, sep="\t", index=False)
-    print(f"[INFO] Per-permutation results saved -> {perm_path}")
-
-    # ── 5. Save summary ──────────────────────────────────────────────────────
-    summary = pd.DataFrame([
-        {"metric": "ROC-AUC",
-         "observed": obs_roc,
-         "null_mean": null_roc.mean(),
-         "null_sd":   null_roc.std(),
-         "null_min":  null_roc.min(),
-         "null_max":  null_roc.max(),
-         "n_perm":    args.n_perm,
-         "empirical_p_one_sided": p_roc},
-        {"metric": "PR-AUC",
-         "observed": obs_pr,
-         "null_mean": null_pr.mean(),
-         "null_sd":   null_pr.std(),
-         "null_min":  null_pr.min(),
-         "null_max":  null_pr.max(),
-         "n_perm":    args.n_perm,
-         "empirical_p_one_sided": p_pr},
-    ])
-    summary_path = os.path.join(args.outdir, "Permutation_summary.txt")
-    summary.to_csv(summary_path, sep="\t", index=False)
-    print(f"[INFO] Summary saved -> {summary_path}")
-    print(summary.to_string())
-
-    # ── 6. Figure: null distributions + observed lines ───────────────────────
-    fig, (ax_roc, ax_pr) = plt.subplots(1, 2, figsize=(11, 4.5))
-
-    # ROC null
-    ax_roc.hist(null_roc, bins=30, color="#85C1E9",
-                edgecolor="white", linewidth=0.5, alpha=0.95)
-    ax_roc.axvline(obs_roc, color="#C0392B", lw=2.0,
-                   label=f"Observed = {obs_roc:.3f}")
-    ax_roc.axvline(null_roc.mean(), color="black",
-                   lw=1.0, linestyle="--",
-                   label=f"Null mean = {null_roc.mean():.3f}")
-    ax_roc.axvline(0.5, color="grey", lw=0.8, linestyle=":",
-                   label="Random (0.5)")
-    ax_roc.set_xlabel("ROC-AUC (5-fold CV)", labelpad=6)
-    ax_roc.set_ylabel("Permutations", labelpad=6)
-    ax_roc.set_title(
-        f"ROC-AUC Null Distribution\nempirical p = {p_roc:.3g} "
-        f"(n = {args.n_perm})",
-        fontweight="bold", pad=8
-    )
-    ax_roc.legend(frameon=False, fontsize=9, loc="upper right")
-
-    # PR null
-    ax_pr.hist(null_pr, bins=30, color="#85C1E9",
-               edgecolor="white", linewidth=0.5, alpha=0.95)
-    ax_pr.axvline(obs_pr, color="#C0392B", lw=2.0,
-                  label=f"Observed = {obs_pr:.3f}")
-    ax_pr.axvline(null_pr.mean(), color="black",
-                  lw=1.0, linestyle="--",
-                  label=f"Null mean = {null_pr.mean():.3f}")
-    ax_pr.axvline(y.mean(), color="grey", lw=0.8, linestyle=":",
-                  label=f"Random ({y.mean():.3f})")
-    ax_pr.set_xlabel("PR-AUC (5-fold CV)", labelpad=6)
-    ax_pr.set_ylabel("Permutations", labelpad=6)
-    ax_pr.set_title(
-        f"PR-AUC Null Distribution\nempirical p = {p_pr:.3g} "
-        f"(n = {args.n_perm})",
-        fontweight="bold", pad=8
-    )
-    ax_pr.legend(frameon=False, fontsize=9, loc="upper right")
-
-    fig.suptitle(
-        "Permutation Test: Parental Marks vs Compartment Switching",
-        fontweight="bold", fontsize=12, y=1.02
-    )
-    plt.tight_layout()
-    for ext in ("pdf", "png"):
-        out = os.path.join(args.outdir, f"Fig1c_permutation_null.{ext}")
-        fig.savefig(out, bbox_inches="tight", pad_inches=0.05, dpi=600)
-        print(f"  Saved -> {out}")
-    plt.close(fig)
-
-    print(f"\n[INFO] Permutation test complete -> {os.path.abspath(args.outdir)}")
+    print(f"\n[INFO] Permutation test complete -> "
+          f"{os.path.abspath(args.outdir)}")
 
 
 if __name__ == "__main__":
