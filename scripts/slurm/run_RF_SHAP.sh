@@ -25,16 +25,16 @@ conda activate multiomics-ml
 echo "=========================================="
 echo " Epigenetic priming"
 echo "=========================================="
-python scripts/analysis/RF_SHAP.py \
-    $CUTRUN $MERGED \
-    --outdir $FIGS/RF_SHAP \
-    --comparison both \
-    --shap_dependence_partners H3K27Ac:H3K27me3 H3K27me3:H3K4me1 
+#python scripts/analysis/RF_SHAP.py \
+#    $CUTRUN $MERGED \
+#    --outdir $FIGS/RF_SHAP \
+#    --comparison both \
+#    --shap_dependence_partners H3K27Ac:H3K27me3 H3K27me3:H3K4me1 
 
 # Permutation test for RF and SHAP significance
-python scripts/RF_permutation_test.py \
-    $FIGS/RF_SHAP/RF_SHAP/Switch_classified.txt \
-    --outdir $FIGS/RF_SHAP/permutation_test \
+python scripts/analysis/RF_permutation_test.py \
+    $FIGS/RF_SHAP/Switch_classified.txt \
+    --outdir $FIGS/permutation_test \
     --comparison both \
     --n_perm 100
 
