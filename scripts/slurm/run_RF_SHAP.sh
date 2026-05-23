@@ -27,7 +27,7 @@ echo " Epigenetic priming"
 echo "=========================================="
 python scripts/analysis/RF_SHAP.py \
     $CUTRUN $MERGED \
-    --outdir $FIGS/RF_SHAP \
+    --outdir $FIGS/RF_SHAP_100_15_b \
     --comparison both \
     --shap_dependence_partners H3K27Ac:H3K27me3 H3K27me3:H3K4me1 
 
