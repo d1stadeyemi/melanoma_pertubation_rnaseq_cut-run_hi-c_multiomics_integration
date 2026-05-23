@@ -27,3 +27,4 @@ dependencies:
     - torch
     - torchvision
     - scikit-posthocs
+    - xgboost

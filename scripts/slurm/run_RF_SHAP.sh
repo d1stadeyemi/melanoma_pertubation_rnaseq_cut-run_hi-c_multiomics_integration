@@ -27,9 +27,8 @@ echo " Epigenetic priming"
 echo "=========================================="
 python scripts/analysis/RF_SHAP.py \
     $CUTRUN $MERGED \
-    --outdir $FIGS/RF_SHAP_100_15_b \
+    --outdir $FIGS/RF_SHAP_test \
     --comparison both \
-    --shap_dependence_partners H3K27Ac:H3K27me3 H3K27me3:H3K4me1 
 
 # Permutation test for RF and SHAP significance
 #python scripts/analysis/RF_permutation_test.py \

@@ -1,5 +1,14 @@
 """
-Epigenetic priming predicts compartment switching — Random Forest + SHAP
+Epigenetic priming predicts compartment switching — Random Forest / XGBoost + SHAP
+
+Supports two model backends via --model:
+    rf       : RandomForestClassifier (DEFAULT, unchanged from prior version)
+    xgboost  : XGBClassifier (gradient-boosted trees)
+
+Both backends are explained with the SAME shap.TreeExplainer call and feed the
+identical downstream pipeline (ROC/PR, beeswarm, dependence, PCA, statistics).
+A result that holds across both model families is a stronger robustness claim
+than one tied to a single algorithm.
 
 Adds a --comparison flag to refine the analysis along compartment-of-origin:
     A     : Stable_A vs A→B (silencing from A compartment)
@@ -14,18 +23,22 @@ Usage:
         data/processed/cut_run_signal_table.txt \
         data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
         --outdir results/exploratory/RF_SHAP \
+        --model rf \
         --comparison both \
         --include_ctcf \
         --shap_dependence_partners H3K27me3:H3K27Ac H3K4me1:H3K9me3
 
-Outputs (suffix depends on --comparison mode):
+    # Same analysis with gradient-boosted trees:
+    python scripts/RF_SHAP.py ... --model xgboost
+
+Outputs (suffix depends on --comparison mode AND --model):
     Fig1a_switch_distribution_<mode>.pdf/png
     Fig1b_violin_marks_<mode>.pdf/png
     Fig1b_violin_pairwise_heatmap_<mode>.pdf/png  (all mode only)
-    Fig1c_RF_ROC_PR_<mode>.pdf/png
-    Fig1d_SHAP_<mode>.pdf/png
-    Fig1d_dependence_<pair>_<mode>.pdf/png
-    Fig1d_dependence_<pair>_<mode>_zoomed.pdf/png   (99th percentile clipped)
+    Fig1c_<model>_ROC_PR_<mode>.pdf/png
+    Fig1d_SHAP_<model>_<mode>.pdf/png
+    Fig1d_dependence_<pair>_<model>_<mode>.pdf/png
+    Fig1d_dependence_<pair>_<model>_<mode>_zoomed.pdf/png   (99th percentile clipped)
     Fig1e_PCA_marks_<mode>.pdf/png
     Statistics_<mode>.txt
     Statistics_dunn_<mark>_all.txt                (all mode only, per-mark)
@@ -55,6 +68,15 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import shap
+
+# XGBoost is optional — only required when --model xgboost is selected.
+# Install: pip install xgboost
+try:
+    from xgboost import XGBClassifier
+    _HAS_XGB = True
+except ImportError:
+    XGBClassifier = None
+    _HAS_XGB = False
 
 # scikit-posthocs is needed for Dunn's test in 'all' mode.
 # Install: pip install scikit-posthocs
@@ -97,10 +119,6 @@ SWITCH_LABELS = {
     "Stable_B": "Stable B",
 }
 
-# Comparison-mode definitions:
-#   negative_class -> reference (Stable)
-#   positive_class -> switcher target
-#   label          -> short human label used in titles/filenames
 COMPARISON_SPEC = {
     "A": {
         "neg":   "Stable_A",
@@ -116,6 +134,62 @@ COMPARISON_SPEC = {
     },
 }
 
+# =============================================================================
+# Model configuration
+# =============================================================================
+# RF defaults reflect the user's hyperparameter sweep (n_estimators=500,
+# max_depth=12, class_weight="balanced_subsample").
+#
+# XGBoost defaults are NOT a 1:1 translation of the RF config. Boosted trees
+# correct errors sequentially, so they want SHALLOWER base learners (depth 3-6)
+# plus a learning rate; deep boosted trees overfit fast. The values below are
+# conservative, regularized, and stable — a sensible analogue to the RF setup
+# and a good starting point for a future XGBoost sweep mirroring the RF one.
+# Class imbalance is handled per-fold via scale_pos_weight (XGB has no
+# class_weight); RF keeps balanced_subsample.
+
+RF_PARAMS = dict(
+    n_estimators=500,
+    max_depth=12,
+    class_weight="balanced_subsample",
+    n_jobs=-1,
+)
+
+XGB_PARAMS = dict(
+    n_estimators=500,
+    max_depth=4,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_lambda=1.0,
+    min_child_weight=1,
+    tree_method="hist",   # fast; switch to "gpu_hist" on GPU nodes if desired
+    n_jobs=-1,
+    eval_metric="logloss",
+)
+
+
+def build_model(model_name, seed, scale_pos_weight=None):
+    """
+    Construct an unfitted classifier for the requested backend.
+
+    model_name : 'rf' or 'xgboost'
+    scale_pos_weight : only used by xgboost; pass (n_neg / n_pos) for the
+                       training fold to handle class imbalance.
+    """
+    if model_name == "rf":
+        return RandomForestClassifier(random_state=seed, **RF_PARAMS)
+    elif model_name == "xgboost":
+        if not _HAS_XGB:
+            sys.exit("[ERROR] --model xgboost requested but xgboost is not "
+                     "installed. Install with: pip install xgboost")
+        params = dict(XGB_PARAMS)
+        if scale_pos_weight is not None:
+            params["scale_pos_weight"] = float(scale_pos_weight)
+        return XGBClassifier(random_state=seed, **params)
+    else:
+        sys.exit(f"[ERROR] Unknown model '{model_name}'.")
+
 
 # =============================================================================
 # CLI
@@ -129,6 +203,12 @@ def parse_args():
     p.add_argument("merged_file",  help="merged multi-omics table")
     p.add_argument("--outdir",     default="results/exploratory/RF_SHAP",
                    help="Output directory for figures and tables")
+    p.add_argument("--model",
+                   choices=["rf", "xgboost"],
+                   default="rf",
+                   help="ML backend: 'rf' (RandomForest, default) or "
+                        "'xgboost' (gradient-boosted trees). Both use the "
+                        "same SHAP TreeExplainer and downstream pipeline.")
     p.add_argument("--include_ctcf", action="store_true",
                    help="Include parental_ctcf_mean as a 5th feature if present.")
     p.add_argument(
@@ -151,7 +231,7 @@ def parse_args():
             "  A    -> Stable_A vs A->B (silencing from A)\n"
             "  B    -> Stable_B vs B->A (activation from B)\n"
             "  both -> Run A and B separately, panels side-by-side (default)\n"
-            "  all  -> Switcher-vs-stable binary RF; "
+            "  all  -> Switcher-vs-stable binary classifier; "
             "violin uses 4-category Kruskal-Wallis + Dunn's post-hoc."
         ),
     )
@@ -312,14 +392,6 @@ def load_data(cutrun_file, merged_file, include_ctcf=False):
 
 
 def subset_for_comparison(df, comp_key):
-    """
-    Filter df to the two categories relevant for comparison A or B.
-
-    comp_key in {'A', 'B'} -> returns the binary-filtered df + spec dict.
-
-    The negative class (Stable) is encoded as 0 in 'is_switcher';
-    the positive class (the switcher) is encoded as 1.
-    """
     spec = COMPARISON_SPEC[comp_key]
     sub  = df[df["switch_cat"].isin([spec["neg"], spec["pos"]])].copy()
     sub["is_switcher"] = (sub["switch_cat"] == spec["pos"]).astype(int)
@@ -327,16 +399,10 @@ def subset_for_comparison(df, comp_key):
 
 
 # =============================================================================
-# Fig 1a — switch distribution
+# Fig 1a — switch distribution  (UNCHANGED)
 # =============================================================================
 
 def plot_switch_distribution(df, outdir, comparison):
-    """
-    Fig 1a — bar chart of switch category counts.
-    - both / all: all 4 categories
-    - A:    only Stable_A and A_to_B
-    - B:    only Stable_B and B_to_A
-    """
     if comparison in ("both", "all"):
         cats = ["B_to_A", "A_to_B", "Stable_A", "Stable_B"]
         title_sfx = ""
@@ -373,15 +439,10 @@ def plot_switch_distribution(df, outdir, comparison):
 
 
 # =============================================================================
-# Fig 1b — violins (mode-aware)
+# Fig 1b — violins (mode-aware)  (UNCHANGED — model-independent)
 # =============================================================================
 
 def _draw_violin_pair(ax, df, mark, neg_cat, pos_cat, title_extra=""):
-    """
-    Helper: draw a 2-category log1p violin (Stable vs Switcher) on `ax`,
-    with colored medians + Cliff's delta + MWU annotation.
-    Used in A/B/both modes.
-    """
     vals_neg = np.log1p(df.loc[df["switch_cat"] == neg_cat, mark].dropna().values)
     vals_pos = np.log1p(df.loc[df["switch_cat"] == pos_cat, mark].dropna().values)
 
@@ -423,12 +484,6 @@ def _draw_violin_pair(ax, df, mark, neg_cat, pos_cat, title_extra=""):
 
 
 def plot_violin_marks_AB(df, mark_names, outdir, comparison):
-    """
-    Mode A/B: one panel per mark, all in a grid (3-column).
-    Mode both: 4-column figure -> for each ROW: [mark_i compA | mark_i compB |
-                                                  mark_{i+1} compA | mark_{i+1} compB]
-              i.e. 2 marks per row, 4 panels per row.
-    """
     if comparison in ("A", "B"):
         spec = COMPARISON_SPEC[comparison]
         n_marks = len(mark_names)
@@ -448,11 +503,10 @@ def plot_violin_marks_AB(df, mark_names, outdir, comparison):
         save_fig(fig, outdir, f"Fig1b_violin_marks_{comparison}")
         return
 
-    # comparison == "both": 4 columns, 2 marks per row
     n_marks = len(mark_names)
     marks_per_row = 2
     n_rows = (n_marks + marks_per_row - 1) // marks_per_row
-    n_cols = 4  # 2 marks * 2 sub-panels (A, B)
+    n_cols = 4
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.8 * n_cols, 4 * n_rows))
     axes = np.atleast_2d(axes)
 
@@ -460,7 +514,6 @@ def plot_violin_marks_AB(df, mark_names, outdir, comparison):
         for slot in range(marks_per_row):
             mark_idx = row * marks_per_row + slot
             if mark_idx >= n_marks:
-                # hide both panels for this slot
                 axes[row, slot * 2].set_visible(False)
                 axes[row, slot * 2 + 1].set_visible(False)
                 continue
@@ -485,7 +538,6 @@ def plot_violin_marks_AB(df, mark_names, outdir, comparison):
 
 
 def _bracket(ax, x1, x2, y, label, lw=1.0, fs=8):
-    """Draw a significance bracket between x1 and x2 at height y."""
     dy = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.012
     ax.plot([x1, x1, x2, x2], [y, y + dy, y + dy, y], lw=lw, c="black")
     ax.text((x1 + x2) / 2, y + dy * 1.2, label,
@@ -501,11 +553,6 @@ def _p_to_stars(p):
 
 
 def plot_violin_marks_all(df, mark_names, outdir):
-    """
-    'all' mode: 4-category violins per mark with Kruskal-Wallis omnibus +
-    Dunn's pairwise post-hoc (BH correction) + significance brackets.
-    Pairwise Cliff's delta + p heatmap saved as a separate figure.
-    """
     if sp is None:
         print("[ERROR] scikit-posthocs not installed.")
         print("        Install with: pip install scikit-posthocs")
@@ -517,7 +564,6 @@ def plot_violin_marks_all(df, mark_names, outdir):
     n_cols    = 3
     n_rows    = (n_marks + n_cols - 1) // n_cols
 
-    # Storage for Dunn's tables (per mark) and the heatmap (per mark)
     dunn_tables = {}
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.2 * n_cols, 4.2 * n_rows))
@@ -546,7 +592,6 @@ def plot_violin_marks_all(df, mark_names, outdir):
             ax.hlines(med, i - 0.18, i + 0.18, colors=SWITCH_COLORS[cat],
                       linewidth=1.4, zorder=4)
 
-        # Kruskal-Wallis omnibus
         if len(data_per_cat) >= 2:
             kw_stat, kw_p = kruskal(*data_per_cat)
         else:
@@ -561,9 +606,7 @@ def plot_violin_marks_all(df, mark_names, outdir):
                       edgecolor="lightgrey", linewidth=0.5, alpha=0.85),
         )
 
-        # Dunn's post-hoc (BH) + Cliff's delta per pair
         if sp is not None and len(data_per_cat) >= 2:
-            # Long form for Dunn
             long_df = pd.concat([
                 pd.DataFrame({"val": d, "cat": c})
                 for d, c in zip(data_per_cat, keep_cats)
@@ -572,7 +615,6 @@ def plot_violin_marks_all(df, mark_names, outdir):
                 long_df, val_col="val", group_col="cat", p_adjust="fdr_bh"
             )
 
-            # Collect per-pair stats (p + Cliff's delta) for export
             rows = []
             for c1, c2 in combinations(keep_cats, 2):
                 p_pair = float(dunn.loc[c1, c2])
@@ -589,10 +631,7 @@ def plot_violin_marks_all(df, mark_names, outdir):
                 })
             dunn_tables[mark] = pd.DataFrame(rows)
 
-            # Significance brackets — draw only pairs with p < 0.05
-            # to keep the figure readable.
             sig_pairs = [r for r in rows if r["dunn_p_BH"] < 0.05]
-            # Order brackets bottom-up so closer pairs are lower
             cat_to_pos = {c: i + 1 for i, c in enumerate(keep_cats)}
             sig_pairs.sort(key=lambda r: abs(cat_to_pos[r["group1"]]
                                              - cat_to_pos[r["group2"]]))
@@ -604,7 +643,6 @@ def plot_violin_marks_all(df, mark_names, outdir):
                 x2 = cat_to_pos[r["group2"]]
                 _bracket(ax, x1, x2, base_y + k * tick, r["stars"])
 
-            # Expand y-range so brackets fit
             ax.set_ylim(ax.get_ylim()[0],
                         base_y + (len(sig_pairs) + 1) * tick)
 
@@ -625,22 +663,16 @@ def plot_violin_marks_all(df, mark_names, outdir):
     plt.tight_layout()
     save_fig(fig, outdir, "Fig1b_violin_marks_all")
 
-    # Save per-mark Dunn tables
     for mark, tab in dunn_tables.items():
         out_tbl = os.path.join(outdir, f"Statistics_dunn_{mark}_all.txt")
         tab.to_csv(out_tbl, sep="\t", index=False)
         print(f"  Dunn table -> {out_tbl}")
 
-    # Supplementary heatmap of pairwise p-values per mark
     if dunn_tables:
         plot_pairwise_heatmap(dunn_tables, mark_names, outdir)
 
 
 def plot_pairwise_heatmap(dunn_tables, mark_names, outdir):
-    """
-    Supplementary heatmap: one mini-heatmap per mark showing pairwise
-    Dunn p-values (BH-adjusted), -log10 transformed for visibility.
-    """
     marks_with_data = [m for m in mark_names if m in dunn_tables]
     if not marks_with_data:
         return
@@ -652,12 +684,10 @@ def plot_pairwise_heatmap(dunn_tables, mark_names, outdir):
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3.6 * n_rows))
     axes = np.atleast_2d(axes).flatten()
 
-    # Establish a stable category order present across marks
     cat_order = ["Stable_A", "Stable_B", "A_to_B", "B_to_A"]
 
     for ax, mark in zip(axes, marks_with_data):
         tab = dunn_tables[mark]
-        # Build a square symmetric matrix
         cats = [c for c in cat_order
                 if c in set(tab["group1"]).union(tab["group2"])]
         mat = pd.DataFrame(np.nan, index=cats, columns=cats)
@@ -695,29 +725,37 @@ def plot_pairwise_heatmap(dunn_tables, mark_names, outdir):
 
 
 # =============================================================================
-# Fig 1c — ROC + PR (mode-aware)
+# Fig 1c — ROC + PR (mode-aware)  — now model-aware
 # =============================================================================
 
-def _run_rf_cv(X, y, seed=42):
+def _run_model_cv(X, y, model_name, seed=42):
     """
-    Run 5-fold CV RF on (X, y) and return everything needed to plot ROC/PR
-    and to compute SHAP later.
-    Returns dict with keys: aucs, aps, mean_tpr, std_tpr, mean_prec, std_prec,
-                            mfpr, mrec, prevalence, mean_auc, mean_ap, std_auc,
-                            std_ap, rf_refit (RF fit on the full data).
+    Run 5-fold CV for the requested backend and return everything needed to
+    plot ROC/PR and to compute SHAP later.
+
+    For xgboost, scale_pos_weight is computed PER FOLD from the training split
+    (XGB has no class_weight). RF uses balanced_subsample internally.
+    The model is refit on the full dataset for SHAP (standard for SHAP-based
+    interpretation: SHAP explains the final model).
     """
-    rf = RandomForestClassifier(
-        n_estimators=500, max_depth=12,
-        class_weight="balanced_subsample", random_state=seed, n_jobs=-1
-    )
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
     aucs, aps = [], []
     tprs, prcs = [], []
     mfpr = np.linspace(0, 1, 100)
     mrec = np.linspace(0, 1, 100)
+
     for tr_idx, te_idx in cv.split(X, y):
-        rf.fit(X[tr_idx], y[tr_idx])
-        y_prob = rf.predict_proba(X[te_idx])[:, 1]
+        y_tr = y[tr_idx]
+        if model_name == "xgboost":
+            n_pos = max(int(y_tr.sum()), 1)
+            n_neg = int((y_tr == 0).sum())
+            spw = n_neg / n_pos
+            model = build_model(model_name, seed, scale_pos_weight=spw)
+        else:
+            model = build_model(model_name, seed)
+
+        model.fit(X[tr_idx], y_tr)
+        y_prob = model.predict_proba(X[te_idx])[:, 1]
         fpr, tpr, _ = roc_curve(y[te_idx], y_prob)
         aucs.append(auc(fpr, tpr))
         tprs.append(np.interp(mfpr, fpr, tpr))
@@ -726,7 +764,13 @@ def _run_rf_cv(X, y, seed=42):
         prcs.append(np.interp(mrec, recall[::-1], precision[::-1]))
 
     # Refit on full dataset for SHAP
-    rf.fit(X, y)
+    if model_name == "xgboost":
+        n_pos = max(int(y.sum()), 1)
+        n_neg = int((y == 0).sum())
+        model = build_model(model_name, seed, scale_pos_weight=n_neg / n_pos)
+    else:
+        model = build_model(model_name, seed)
+    model.fit(X, y)
 
     return {
         "aucs": np.array(aucs),
@@ -737,12 +781,12 @@ def _run_rf_cv(X, y, seed=42):
         "prevalence": float(y.mean()),
         "mean_auc": float(np.mean(aucs)), "std_auc": float(np.std(aucs)),
         "mean_ap":  float(np.mean(aps)),  "std_ap":  float(np.std(aps)),
-        "rf_refit": rf,
+        "model_refit": model,
+        "model_name":  model_name,
     }
 
 
 def _draw_roc_panel(ax, res, title_extra=""):
-    """ROC sub-panel with random line + per-fold AUC inset."""
     for tpr_fold in res["tprs"]:
         ax.plot(res["mfpr"], tpr_fold, color="#85C1E9", alpha=0.15, lw=1)
     mean_tpr = res["tprs"].mean(axis=0)
@@ -776,7 +820,6 @@ def _draw_roc_panel(ax, res, title_extra=""):
 
 
 def _draw_pr_panel(ax, res, title_extra=""):
-    """PR sub-panel with prevalence baseline."""
     for prc_fold in res["prcs"]:
         ax.plot(res["mrec"], prc_fold, color="#85C1E9", alpha=0.15, lw=1)
     mean_prec = res["prcs"].mean(axis=0)
@@ -797,12 +840,8 @@ def _draw_pr_panel(ax, res, title_extra=""):
     ax.legend(frameon=False, fontsize=8.5, loc="upper right")
 
 
-def plot_roc_pr(results_by_mode, outdir, comparison):
-    """
-    Plot ROC + PR.
-        single-mode (A / B / all): 1x2 figure.
-        both:                      2x2 figure (top=A, bottom=B).
-    """
+def plot_roc_pr(results_by_mode, outdir, comparison, model_name):
+    model_disp = "Random Forest" if model_name == "rf" else "XGBoost"
     if comparison in ("A", "B", "all"):
         if comparison == "all":
             mode_label = "Switchers vs Stable"
@@ -812,14 +851,13 @@ def plot_roc_pr(results_by_mode, outdir, comparison):
         fig, (ax_roc, ax_pr) = plt.subplots(1, 2, figsize=(11, 5))
         _draw_roc_panel(ax_roc, res)
         _draw_pr_panel(ax_pr, res)
-        fig.suptitle(f"Random Forest: Parental Marks Predict "
+        fig.suptitle(f"{model_disp}: Parental Marks Predict "
                      f"Compartment Switching\n({mode_label})",
                      fontweight="bold", fontsize=12, y=1.02)
         plt.tight_layout()
-        save_fig(fig, outdir, f"Fig1c_RF_ROC_PR_{comparison}")
+        save_fig(fig, outdir, f"Fig1c_{model_name}_ROC_PR_{comparison}")
         return
 
-    # both mode -> 2x2
     fig, axes = plt.subplots(2, 2, figsize=(11, 10))
     for r_idx, comp in enumerate(["A", "B"]):
         res = results_by_mode[comp]
@@ -829,32 +867,60 @@ def plot_roc_pr(results_by_mode, outdir, comparison):
         _draw_pr_panel(axes[r_idx, 1], res,
                        title_extra=f"\n({spec['label']})")
     fig.suptitle(
-        "Random Forest: Parental Marks Predict Compartment Switching"
+        f"{model_disp}: Parental Marks Predict Compartment Switching"
         "\nCompartment-resolved (A and B)",
         fontweight="bold", fontsize=12, y=1.00,
     )
     plt.tight_layout()
-    save_fig(fig, outdir, "Fig1c_RF_ROC_PR_both")
+    save_fig(fig, outdir, f"Fig1c_{model_name}_ROC_PR_both")
 
 
 # =============================================================================
-# Fig 1d — SHAP (mode-aware)
+# Fig 1d — SHAP (mode-aware)  — model-agnostic via TreeExplainer
 # =============================================================================
 
-def _shap_values(rf, X):
-    explainer = shap.TreeExplainer(rf)
+def write_shap_per_gene(sv, genes, mark_names, outdir, model_name, comp):
+    """
+    Write per-gene SHAP values for one comparison to its own self-describing
+    file: SHAP_per_gene_<model>_<comp>.txt
+    One row per gene the model actually scored (no NaN padding).
+    Columns: gene_name, <mark>_SHAP for each mark.
+    """
+    comp_tag = COMPARISON_SPEC[comp]["short"] if comp in COMPARISON_SPEC else "all"
+    out = pd.DataFrame(sv, columns=[f"{m}_SHAP" for m in mark_names])
+    out.insert(0, "gene_name", genes)
+    out.insert(1, "comparison", comp_tag)
+    out.insert(2, "model", model_name)
+    path = os.path.join(outdir, f"SHAP_per_gene_{model_name}_{comp}.txt")
+    out.to_csv(path, sep="\t", index=False)
+    print(f"  Per-gene SHAP -> {path}")
+
+def _shap_values(model, X):
+    """
+    Extract positive-class SHAP values for either RF or XGBoost.
+
+    shap.TreeExplainer supports both backends natively. Output shape varies:
+      - RF (sklearn): often a list [neg_array, pos_array] OR a 3D array
+        (n, n_features, n_classes) in newer SHAP.
+      - XGBoost binary: a single 2D array (n, n_features) of log-odds
+        contributions for the positive class.
+    This handles all three forms and always returns a 2D (n, n_features) array.
+    """
+    explainer = shap.TreeExplainer(model)
     shap_vals = explainer.shap_values(X)
     if isinstance(shap_vals, list):
-        sv = shap_vals[1]
+        # Binary RF: take the positive class
+        sv = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
     elif np.ndim(shap_vals) == 3:
+        # (n, features, classes) -> positive class
         sv = shap_vals[:, :, 1]
     else:
+        # XGBoost binary, or RF returning a single array: already positive-class
         sv = shap_vals
-    return sv
+    return np.asarray(sv)
 
 
 def _draw_shap_panels(ax_bar, ax_bee, sv, X, mark_names, title_extra=""):
-    """Draw a (bar, beeswarm) pair on the provided axes."""
     mean_shap = np.abs(sv).mean(axis=0).ravel()
     order     = np.argsort(mean_shap)[::-1]
     top_idx   = int(np.argmax(mean_shap))
@@ -876,7 +942,6 @@ def _draw_shap_panels(ax_bar, ax_bee, sv, X, mark_names, title_extra=""):
                      fontweight="bold", pad=8)
     ax_bar.set_xlim(0, max(mean_shap) * 1.18)
 
-    # Beeswarm
     feat_order = [mark_names[i] for i in order][::-1]
     X_df  = pd.DataFrame(X,  columns=mark_names)[feat_order]
     sv_df = pd.DataFrame(sv, columns=mark_names)[feat_order]
@@ -893,50 +958,48 @@ def _draw_shap_panels(ax_bar, ax_bee, sv, X, mark_names, title_extra=""):
                      fontweight="bold", pad=8)
 
 
-def plot_shap(results_by_mode, mark_names, X_by_mode, outdir, comparison):
-    """
-    SHAP bar + beeswarm.
-        single-mode (A/B/all): 1x2 figure  -> [bar | beeswarm]
-        both:                  2x2 figure  -> A on top row, B on bottom row
-    Returns dict {mode: (sv, X, mark_names)} for downstream dependence plots.
-    """
+def plot_shap(results_by_mode, mark_names, X_by_mode, outdir, comparison,
+              model_name):
+    model_disp = "Random Forest" if model_name == "rf" else "XGBoost"
     sv_store = {}
 
     if comparison in ("A", "B", "all"):
         res   = results_by_mode[comparison]
-        X     = X_by_mode[comparison]
-        sv    = _shap_values(res["rf_refit"], X)
+        X, genes = X_by_mode[comparison]                 # <-- unpack
+        sv    = _shap_values(res["model_refit"], X)
         sv_store[comparison] = (sv, X)
+        write_shap_per_gene(sv, genes, mark_names,       # <-- write file
+                            outdir, model_name, comparison)
 
         fig, (ax_bar, ax_bee) = plt.subplots(
             1, 2, figsize=(11, 4.5),
             gridspec_kw={"width_ratios": [1.0, 1.2]},
         )
-        title_extra = ""
         if comparison == "all":
             mode_label = "Switchers vs Stable"
         else:
             mode_label = COMPARISON_SPEC[comparison]["label"]
         _draw_shap_panels(ax_bar, ax_bee, sv, X, mark_names)
         fig.suptitle(
-            f"Parental Marks \u2192 Compartment Switch Prediction (SHAP)"
-            f"\n({mode_label})",
+            f"Parental Marks \u2192 Compartment Switch Prediction "
+            f"(SHAP, {model_disp})\n({mode_label})",
             fontweight="bold", fontsize=12, y=1.02,
         )
         plt.tight_layout()
-        save_fig(fig, outdir, f"Fig1d_SHAP_{comparison}")
+        save_fig(fig, outdir, f"Fig1d_SHAP_{model_name}_{comparison}")
         return sv_store
 
-    # both -> 2x2
     fig, axes = plt.subplots(
         2, 2, figsize=(11, 9),
         gridspec_kw={"width_ratios": [1.0, 1.2]},
     )
     for r_idx, comp in enumerate(["A", "B"]):
         res   = results_by_mode[comp]
-        X     = X_by_mode[comp]
-        sv    = _shap_values(res["rf_refit"], X)
+        X, genes = X_by_mode[comp]                       # <-- unpack
+        sv    = _shap_values(res["model_refit"], X)
         sv_store[comp] = (sv, X)
+        write_shap_per_gene(sv, genes, mark_names,       # <-- write file
+                            outdir, model_name, comp)
         spec = COMPARISON_SPEC[comp]
         _draw_shap_panels(
             axes[r_idx, 0], axes[r_idx, 1],
@@ -944,22 +1007,21 @@ def plot_shap(results_by_mode, mark_names, X_by_mode, outdir, comparison):
             title_extra=f"\n({spec['label']})",
         )
     fig.suptitle(
-        "Parental Marks \u2192 Compartment Switch Prediction (SHAP)"
+        f"Parental Marks \u2192 Compartment Switch Prediction (SHAP, {model_disp})"
         "\nCompartment-resolved (A on top, B on bottom)",
         fontweight="bold", fontsize=12, y=1.00,
     )
     plt.tight_layout()
-    save_fig(fig, outdir, "Fig1d_SHAP_both")
+    save_fig(fig, outdir, f"Fig1d_SHAP_{model_name}_both")
     return sv_store
 
 
 # =============================================================================
-# SHAP dependence plots
+# SHAP dependence plots  — model-agnostic (operates on stored sv arrays)
 # =============================================================================
 
 def _draw_dependence_panel(ax, x_vals, sv_vals, c_vals, feat_x, feat_c,
                             xlim=None, ylim=None):
-    """Helper: draw a single dependence scatter on `ax`."""
     sc = ax.scatter(
         x_vals, sv_vals, c=c_vals,
         cmap="plasma", s=8, alpha=0.55,
@@ -983,10 +1045,6 @@ def _draw_dependence_panel(ax, x_vals, sv_vals, c_vals, feat_x, feat_c,
 
 
 def _resolve_pair(pair, mark_names):
-    """
-    Case-insensitive mark resolution.
-    Returns (feat_a, feat_b, idx_a, idx_b) or None if either is missing.
-    """
     name_to_idx_ci = {m.lower(): i for i, m in enumerate(mark_names)}
     feat_a_in, feat_b_in = pair
     feat_a_idx = name_to_idx_ci.get(feat_a_in.lower())
@@ -1000,16 +1058,7 @@ def _resolve_pair(pair, mark_names):
 
 
 def plot_shap_dependence(sv_store, mark_names, pairs, outdir, comparison,
-                          zoom_pct=99):
-    """
-    For each requested pair, produce TWO figures: full-range and zoomed
-    (clipped to 1st-99th percentile by default).
-
-    Layouts:
-        A or B (single):   1x2  -> [SHAP(A) vs A col by B | SHAP(B) vs B col by A]
-        both:              2x2  -> top row A mode, bottom row B mode
-        all:               1x2  -> like single, run on full dataset
-    """
+                          model_name, zoom_pct=99):
     if not pairs:
         print("[INFO] No --shap_dependence_partners specified; skipping "
               "dependence plots.")
@@ -1037,10 +1086,9 @@ def plot_shap_dependence(sv_store, mark_names, pairs, outdir, comparison,
         if resolved is None:
             continue
         feat_a, feat_b, idx_a, idx_b = resolved
-        print(f"[INFO] SHAP dependence pair ({comparison}): "
+        print(f"[INFO] SHAP dependence pair ({comparison}, {model_name}): "
               f"{feat_a} <-> {feat_b}")
 
-        # ── Full-range figure ────────────────────────────────────────────
         if comparison in ("A", "B", "all"):
             sv, X = sv_store[comparison]
             fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(12, 4.8))
@@ -1051,15 +1099,15 @@ def plot_shap_dependence(sv_store, mark_names, pairs, outdir, comparison,
                          fontsize=10, y=1.02)
             plt.tight_layout()
             save_fig(fig, outdir,
-                     f"Fig1d_dependence_{feat_a}_vs_{feat_b}_{comparison}")
-        else:  # both -> 2x2
+                     f"Fig1d_dependence_{feat_a}_vs_{feat_b}_"
+                     f"{model_name}_{comparison}")
+        else:
             fig, axes = plt.subplots(2, 2, figsize=(12, 9.6))
             for r_idx, comp in enumerate(["A", "B"]):
                 sv, X = sv_store[comp]
                 _draw_for_mode(axes[r_idx, 0], axes[r_idx, 1],
                                 sv, X, feat_a, feat_b, idx_a, idx_b)
                 spec = COMPARISON_SPEC[comp]
-                # Subtle row-level annotation via the panel titles' extra
                 axes[r_idx, 0].set_title(
                     axes[r_idx, 0].get_title() + f"\n[{spec['label']}]",
                     fontweight="bold", pad=8,
@@ -1072,10 +1120,9 @@ def plot_shap_dependence(sv_store, mark_names, pairs, outdir, comparison,
                          fontweight="bold", fontsize=12, y=1.00)
             plt.tight_layout()
             save_fig(fig, outdir,
-                     f"Fig1d_dependence_{feat_a}_vs_{feat_b}_both")
+                     f"Fig1d_dependence_{feat_a}_vs_{feat_b}_"
+                     f"{model_name}_both")
 
-        # ── Zoomed figure (clip to 1st – zoom_pct percentile) ────────────
-        # Limits are computed per-mode so each panel zooms to its own bulk.
         if comparison in ("A", "B", "all"):
             sv, X = sv_store[comparison]
             xlim_a = _compute_pct(np.log1p(X[:, idx_a]), zoom_pct)
@@ -1095,7 +1142,7 @@ def plot_shap_dependence(sv_store, mark_names, pairs, outdir, comparison,
             plt.tight_layout()
             save_fig(fig, outdir,
                      f"Fig1d_dependence_{feat_a}_vs_{feat_b}_"
-                     f"{comparison}_zoomed")
+                     f"{model_name}_{comparison}_zoomed")
         else:
             fig, axes = plt.subplots(2, 2, figsize=(12, 9.6))
             for r_idx, comp in enumerate(["A", "B"]):
@@ -1124,11 +1171,11 @@ def plot_shap_dependence(sv_store, mark_names, pairs, outdir, comparison,
             )
             plt.tight_layout()
             save_fig(fig, outdir,
-                     f"Fig1d_dependence_{feat_a}_vs_{feat_b}_both_zoomed")
+                     f"Fig1d_dependence_{feat_a}_vs_{feat_b}_"
+                     f"{model_name}_both_zoomed")
 
 
 def parse_dependence_pairs(raw_pairs):
-    """Parse 'MARK1:MARK2' CLI strings into list of tuples."""
     if not raw_pairs:
         return []
     out = []
@@ -1145,14 +1192,10 @@ def parse_dependence_pairs(raw_pairs):
 
 
 # =============================================================================
-# Fig 1e — PCA (mode-aware)
+# Fig 1e — PCA (mode-aware)  (UNCHANGED — model-independent)
 # =============================================================================
 
 def _draw_pca_panel(ax, df_subset, mark_names, cats_fg, cats_bg):
-    """
-    Draw one PCA on `ax`. cats_fg are foreground (visible, larger);
-    cats_bg are faded background.
-    """
     if df_subset.empty:
         ax.set_visible(False); return None
 
@@ -1195,12 +1238,6 @@ def _draw_pca_panel(ax, df_subset, mark_names, cats_fg, cats_bg):
 
 
 def plot_pca(df, mark_names, outdir, comparison):
-    """
-    PCA of log1p(Parental marks).
-        A / B (single): 1 panel, on filtered subset
-        both:           1x2 panel (A on left, B on right)
-        all:            unchanged from old behaviour (full 4-category)
-    """
     if comparison == "all":
         df_sub = df[df["switch_cat"].isin(
             ["Stable_A", "Stable_B", "A_to_B", "B_to_A"]
@@ -1235,7 +1272,6 @@ def plot_pca(df, mark_names, outdir, comparison):
         save_fig(fig, outdir, f"Fig1e_PCA_marks_{comparison}")
         return
 
-    # both -> 1x2
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.6))
     for ax, comp in zip(axes, ["A", "B"]):
         spec = COMPARISON_SPEC[comp]
@@ -1255,19 +1291,10 @@ def plot_pca(df, mark_names, outdir, comparison):
 
 
 # =============================================================================
-# Statistics output
+# Statistics output  (UNCHANGED — describes the data, not the model)
 # =============================================================================
 
 def save_statistics(df, mark_names, outdir, comparison):
-    """
-    Per-mark Mann-Whitney + Cliff's delta, with the comparison column
-    indicating which contrast was used.
-        A:    rows for Stable_A vs A->B per mark
-        B:    rows for Stable_B vs B->A per mark
-        both: A and B rows interleaved
-        all:  original Switchers (B->A ∪ A->B) vs Stable (Stable_A ∪ Stable_B)
-              (Dunn's tables are saved separately by plot_violin_marks_all.)
-    """
     def _per_mark(neg_cats, pos_cats, label):
         out = []
         neg_mask = df["switch_cat"].isin(neg_cats)
@@ -1288,7 +1315,7 @@ def save_statistics(df, mark_names, outdir, comparison):
                 "median_negative":    np.median(neg_vals),
                 "mannwhitney_U":      stat,
                 "p_value":            p,
-                "cliffs_delta":       d,   # positive vs negative
+                "cliffs_delta":       d,
                 "effect_magnitude":   mag,
             })
         return out
@@ -1321,16 +1348,10 @@ def save_statistics(df, mark_names, outdir, comparison):
 
 
 # =============================================================================
-# Orchestrator
+# Orchestrator  — now passes model_name through
 # =============================================================================
 
-def run_ml_for_comparison(df, mark_names, comparison):
-    """
-    Build X, y for the requested mode and run the RF + CV.
-    Returns (results_dict, X_dict) keyed by sub-comparison.
-        single mode 'A'/'B'/'all' -> dict with 1 key.
-        'both'                    -> dict with 2 keys ('A' and 'B').
-    """
+def run_ml_for_comparison(df, mark_names, comparison, model_name):
     results = {}
     Xs      = {}
 
@@ -1344,28 +1365,28 @@ def run_ml_for_comparison(df, mark_names, comparison):
         X = sub[mark_names].values
         y = sub["is_switcher"].values
         if len(X) < 50 or y.sum() < 5:
-            print("[WARN] Insufficient data for RF (all). Skipping.")
+            print("[WARN] Insufficient data for model (all). Skipping.")
             return results, Xs
-        print(f"[INFO] RF (all): N={len(X)}, switchers={y.sum()}, "
+        print(f"[INFO] {model_name} (all): N={len(X)}, switchers={y.sum()}, "
               f"stable={(y == 0).sum()}, prevalence={y.mean():.3f}")
-        results["all"] = _run_rf_cv(X, y)
-        Xs["all"]      = X
+        results["all"] = _run_model_cv(X, y, model_name)
+        Xs["all"]      = (X, sub["gene_name"].values)
         return results, Xs
 
     comps = ["A", "B"] if comparison == "both" else [comparison]
     for comp in comps:
         sub, spec = subset_for_comparison(df, comp)
         if sub["is_switcher"].sum() < 5 or len(sub) < 50:
-            print(f"[WARN] Insufficient data for RF ({comp}). Skipping.")
+            print(f"[WARN] Insufficient data for model ({comp}). Skipping.")
             continue
         X = sub[mark_names].values
         y = sub["is_switcher"].values
-        print(f"[INFO] RF ({spec['label']}): N={len(X)}, "
+        print(f"[INFO] {model_name} ({spec['label']}): N={len(X)}, "
               f"positive={y.sum()} ({spec['pos']}), "
               f"negative={(y == 0).sum()} ({spec['neg']}), "
               f"prevalence={y.mean():.3f}")
-        results[comp] = _run_rf_cv(X, y)
-        Xs[comp]      = X
+        results[comp] = _run_model_cv(X, y, model_name)
+        Xs[comp]      = (X, sub["gene_name"].values)
     return results, Xs
 
 
@@ -1373,15 +1394,20 @@ def main():
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
 
+    if args.model == "xgboost" and not _HAS_XGB:
+        sys.exit("[ERROR] --model xgboost requested but xgboost is not "
+                 "installed. Install with: pip install xgboost")
+
     if args.comparison == "all" and sp is None:
         print("[WARN] 'all' mode requested but scikit-posthocs is not "
               "installed. Dunn's post-hoc and brackets will be skipped.")
         print("       Install with: pip install scikit-posthocs")
 
+    print(f"[INFO] Model backend: {args.model}")
+
     df, mark_names = load_data(args.cutrun_file, args.merged_file,
                                 include_ctcf=args.include_ctcf)
 
-    # Always emit the classified gene table
     out_genes = os.path.join(args.outdir, "Switch_classified.txt")
     df.to_csv(out_genes, sep="\t", index=False)
     print(f"[INFO] Classified gene table saved -> {out_genes}")
@@ -1396,26 +1422,26 @@ def main():
     else:
         plot_violin_marks_AB(df, mark_names, args.outdir, args.comparison)
 
-    print("\n[INFO] ML pipeline (RF + CV)...")
+    print(f"\n[INFO] ML pipeline ({args.model} + CV)...")
     results_by_mode, X_by_mode = run_ml_for_comparison(
-        df, mark_names, args.comparison
+        df, mark_names, args.comparison, args.model
     )
     if not results_by_mode:
-        print("[ERROR] No RF results produced; aborting downstream plots.")
+        print("[ERROR] No model results produced; aborting downstream plots.")
         sys.exit(1)
 
     print("\n[INFO] Fig 1c: ROC + PR...")
-    plot_roc_pr(results_by_mode, args.outdir, args.comparison)
+    plot_roc_pr(results_by_mode, args.outdir, args.comparison, args.model)
 
     print("\n[INFO] Fig 1d: SHAP bar + beeswarm...")
     sv_store = plot_shap(results_by_mode, mark_names, X_by_mode,
-                          args.outdir, args.comparison)
+                          args.outdir, args.comparison, args.model)
 
     pairs = parse_dependence_pairs(args.shap_dependence_partners)
     if pairs:
         print(f"\n[INFO] Fig 1d: SHAP dependence pairs ({pairs})...")
         plot_shap_dependence(sv_store, mark_names, pairs,
-                              args.outdir, args.comparison,
+                              args.outdir, args.comparison, args.model,
                               zoom_pct=99)
 
     print("\n[INFO] Fig 1e: PCA...")
@@ -1424,7 +1450,8 @@ def main():
     print("\n[INFO] Statistics...")
     save_statistics(df, mark_names, args.outdir, args.comparison)
 
-    print(f"\n[INFO] Q1 complete -> {os.path.abspath(args.outdir)}")
+    print(f"\n[INFO] Q1 complete ({args.model}) "
+          f"-> {os.path.abspath(args.outdir)}")
 
 
 if __name__ == "__main__":
