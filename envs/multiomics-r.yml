@@ -29,3 +29,4 @@ dependencies:
   - bioconductor-biomart
   - bioconductor-clusterprofiler
   - bioconductor-enhancedvolcano
+  - bioconductor-csaw

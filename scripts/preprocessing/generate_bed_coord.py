@@ -40,14 +40,6 @@ class GridConvention:
         b = self.offset
         return f"{b}, {b + self.step}, {b + 2 * self.step}, ..."
 
-    def emit_end(self, raw_inclusive_end):
-        """raw_inclusive_end is the last covered base (1-based inclusive view).
-        Convert to the convention's end representation."""
-        # In half-open 0-based, the exclusive end equals the inclusive-end value
-        # under our grid (e.g. covers bases 0..4999 -> end 5000).
-        # In 1-based inclusive, the inclusive end is that same number.
-        return raw_inclusive_end
-
 
 def find_coord_col(df, user_col=None):
     if user_col:
@@ -92,20 +84,16 @@ def check_consistency(records, conv):
 
 
 def tile_coord(chrom, span_start, span_end, coord, conv, snap_grid=False):
-    """Tile [span_start, span_end] into bins under the given convention.
-    Internally we walk a 1-based-inclusive cursor and translate on emit."""
+    """Tile [span_start, span_end] into bins under the given convention."""
     step = conv.step
     start = conv.snap_start(span_start) if snap_grid else span_start
     rows = []
     while start <= span_end:
         if conv.zero_based:
-            # half-open [start, end): start as-is, exclusive end clipped to span_end
-            end = min(start + step, span_end)
-            rows.append((chrom, start, end, coord))
+            end = min(start + step, span_end)        # half-open [start, end)
         else:
-            # inclusive [start, end]
-            end = min(start + step - 1, span_end)
-            rows.append((chrom, start, end, coord))
+            end = min(start + step - 1, span_end)    # inclusive [start, end]
+        rows.append((chrom, start, end, coord))
         start += step
     return rows
 
@@ -120,10 +108,11 @@ def load_table(input_file):
 
 
 def _format_offenders(offenders, label, fix_label, flag_hint, conv):
+    expected = conv.example_starts() if label == "start" else f"{conv.step}, {2 * conv.step}, ..."
     lines = [
         f"ERROR: Inconsistent coordinate {label} boundaries detected "
         f"(convention: {conv.name}, step={conv.step}).",
-        f"Expected {label}s on the grid: {conv.example_starts() if label == 'start' else f'{conv.step}, {2 * conv.step}, ...'}",
+        f"Expected {label}s on the grid: {expected}",
         f"Found {len(offenders)} off-grid {label}(s). First few:",
     ]
     for coord, val, fixed in offenders[:10]:
@@ -176,6 +165,12 @@ def generate_bed(input_file, coord_col=None, step=STEP, zero_based=False,
     bed.drop_duplicates(subset=["chr", "start", "end"], inplace=True)
     bed.sort_values(["chr", "start"], inplace=True)
     bed.reset_index(drop=True, inplace=True)
+
+    # Positional unique ID (delimiter-safe), placed in BED column 4 (name field).
+    bed["bin_id"] = (
+        bed["chr"] + "_" + bed["start"].astype(str) + "_" + bed["end"].astype(str)
+    )
+    bed = bed[["chr", "start", "end", "bin_id", "coord"]]
     return bed
 
 
@@ -193,17 +188,20 @@ def main(input_file, output_dir, coord_col=None, step=STEP, zero_based=False,
          snap_grid=False, allow_partial_end=False):
     bed = generate_bed(input_file, coord_col=coord_col, step=step, zero_based=zero_based,
                        snap_grid=snap_grid, allow_partial_end=allow_partial_end)
-    conv_name = "0-based half-open" if zero_based else "1-based inclusive"
     save_bed(bed, "coordinates_5kb_bins.bed", output_dir)
     save_txt(bed, "coordinates_5kb_bins.txt", output_dir)
     print(f"Files saved to {output_dir}")
-    print(f"Convention: {conv_name} | step: {step}")
+    print(f"Convention: {conv_name(zero_based)} | step: {step}")
     print(f"Columns: {list(bed.columns)}")
     print(f"Rows: {len(bed)}")
     if snap_grid:
         print("Note: --snap-grid was active; bin starts were aligned to the grid.")
     if allow_partial_end:
         print("Note: --allow-partial-end was active; some final bins may be shorter than the step size.")
+
+
+def conv_name(zero_based):
+    return "0-based half-open" if zero_based else "1-based inclusive"
 
 
 if __name__ == "__main__":

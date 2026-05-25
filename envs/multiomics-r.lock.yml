@@ -29,6 +29,7 @@ dependencies:
   - bioconductor-biostrings=2.74.0
   - bioconductor-clusterprofiler=4.14.0
   - bioconductor-complexheatmap=2.22.0
+  - bioconductor-csaw=1.40.0
   - bioconductor-data-packages=20260207
   - bioconductor-delayedarray=0.32.0
   - bioconductor-deseq2=1.46.0
@@ -48,6 +49,7 @@ dependencies:
   - bioconductor-keggrest=1.46.0
   - bioconductor-limma=3.62.1
   - bioconductor-matrixgenerics=1.18.0
+  - bioconductor-metapod=1.14.0
   - bioconductor-mixomics=6.30.0
   - bioconductor-qvalue=2.38.0
   - bioconductor-rhtslib=3.2.0
@@ -67,11 +69,11 @@ dependencies:
   - bwidget=1.10.1
   - bzip2=1.0.8
   - c-ares=1.34.6
-  - ca-certificates=2026.4.22
+  - ca-certificates=2026.5.20
   - cached-property=1.5.2
   - cached_property=1.5.2
   - cairo=1.18.4
-  - certifi=2026.4.22
+  - certifi=2026.5.20
   - cffi=2.0.0
   - charset-normalizer=3.4.7
   - comm=0.2.3
