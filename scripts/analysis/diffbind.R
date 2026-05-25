@@ -214,25 +214,30 @@ run_one_normalization <- function(obj, ss, norm_tag, opt, tag, g1, g2,
   message("[INFO] ", norm_tag, ": ", nrow(sig), " significant sites of ", nrow(res),
           " (FDR<", opt$fdr, " & |log2FC|>=", opt$lfc, ")")
 
-  save_qc_plots(obj, paste0(base, "_QC.pdf"))
+  save_qc_plots(obj, base)
   invisible(obj)
 }
 
 # -----------------------------------------------------------------------------
-# Standard DiffBind diagnostic plots for the supplement.
+# Standard DiffBind diagnostic plots for the supplement, each written as BOTH
+# a .pdf (vector, for the paper) and a .png (fast on-screen preview).
+# render_one() opens both devices around a single plotting call.
 # -----------------------------------------------------------------------------
-save_qc_plots <- function(obj, path) {
+render_one <- function(draw_fn, base_path, w = 7, h = 6) {
+  tryCatch({ pdf(paste0(base_path, ".pdf"), width = w, height = h); draw_fn() },
+           error = function(e) message("  [QC] PDF skipped: ", conditionMessage(e)),
+           finally = if (!is.null(dev.list())) dev.off())
+  tryCatch({ png(paste0(base_path, ".png"), width = w*150, height = h*150, res = 150); draw_fn() },
+           error = function(e) message("  [QC] PNG skipped: ", conditionMessage(e)),
+           finally = if (!is.null(dev.list())) dev.off())
+}
+
+save_qc_plots <- function(obj, base) {
   library(DiffBind)
-  pdf(path, width = 7, height = 6)
-  for (fn in list(
-    function() dba.plotHeatmap(obj),
-    function() dba.plotPCA(obj, label = DBA_CONDITION),
-    function() dba.plotMA(obj),
-    function() dba.plotVolcano(obj))) {
-    tryCatch(fn(), error = function(e)
-      message("  [QC] a plot was skipped: ", conditionMessage(e)))
-  }
-  dev.off()
+  render_one(function() dba.plotHeatmap(obj),               paste0(base, "_heatmap"))
+  render_one(function() dba.plotPCA(obj, label = DBA_CONDITION), paste0(base, "_PCA"))
+  render_one(function() dba.plotMA(obj),                    paste0(base, "_MA"))
+  render_one(function() dba.plotVolcano(obj),               paste0(base, "_volcano"))
 }
 
 # -----------------------------------------------------------------------------

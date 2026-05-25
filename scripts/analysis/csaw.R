@@ -243,26 +243,71 @@ run_one_normalization <- function(win, bins, ss, design_info, norm_tag,
           " (FDR<", opt$fdr,
           if (!is.na(lfc_col)) paste0(" & |log2FC|>=", opt$lfc) else "", ")")
 
-  # QC plots for the supplement.
-  save_qc_plots(y, result, group, ss, opt, paste0(base, "_QC.pdf"), tag, norm_tag)
+  # Direction balance among significant regions (gained vs lost in group1).
+  # A wildly lopsided split can indicate a global shift that library-size
+  # normalization mishandles — worth noting in the log automatically.
+  if (!is.na(lfc_col) && nrow(sig) > 0) {
+    up   <- sum(sig[[lfc_col]] > 0)
+    down <- sum(sig[[lfc_col]] < 0)
+    message(sprintf("[INFO] %s: direction balance — up(in g1)=%d (%.0f%%), down=%d (%.0f%%)",
+                    norm_tag, up, 100*up/(up+down), down, 100*down/(up+down)))
+  }
+
+  # QC plots for the supplement (PDF for the paper + PNG for fast preview).
+  save_qc_plots(y, result, group, ss, opt, base, tag, norm_tag)
   invisible(out)
 }
 
 # -----------------------------------------------------------------------------
-# MDS (do replicates cluster by condition?) and smear/MA (effect vs abundance).
+# render_plot(): draw the SAME plot to BOTH a PDF (vector, for the paper) and a
+# PNG (raster, for fast on-screen preview). `draw_fn` is a zero-arg function
+# that issues the plotting calls; we just open/close the two devices around it.
 # -----------------------------------------------------------------------------
-save_qc_plots <- function(y, result, group, ss, opt, path, tag, norm_tag) {
+render_plot <- function(draw_fn, base_path, w = 7, h = 6) {
+  # PDF
+  tryCatch({ pdf(paste0(base_path, ".pdf"), width = w, height = h); draw_fn() },
+           error = function(e) message("  [QC] PDF skipped: ", conditionMessage(e)),
+           finally = if (!is.null(dev.list())) dev.off())
+  # PNG (150 dpi is plenty for a quick look)
+  tryCatch({ png(paste0(base_path, ".png"), width = w*150, height = h*150, res = 150); draw_fn() },
+           error = function(e) message("  [QC] PNG skipped: ", conditionMessage(e)),
+           finally = if (!is.null(dev.list())) dev.off())
+}
+
+# -----------------------------------------------------------------------------
+# QC plots, each written as both .pdf and .png:
+#   *_MDS  : sample clustering. Points coloured by CONDITION with a legend, and
+#            short rep labels offset below each point — so replicate labels no
+#            longer overprint each other (the original bug). Lets you SEE whether
+#            replicates of a condition cluster together (good) or scatter (a
+#            reproducibility concern, as seen for Parental H3K27me3).
+#   *_MA   : smear/MA — log2FC vs average abundance, with +/- lfc guide lines.
+# -----------------------------------------------------------------------------
+save_qc_plots <- function(y, result, group, ss, opt, base, tag, norm_tag) {
   library(edgeR)
-  pdf(path, width = 7, height = 6)
-  tryCatch(
-    plotMDS(cpm(y, log = TRUE), labels = ss$SampleID,
-            col = as.integer(group), main = paste(tag, norm_tag, "MDS")),
-    error = function(e) message("  [QC] MDS skipped: ", conditionMessage(e)))
-  tryCatch({
+
+  # Colour by CONDITION (not the g1/g2 grouping) so replicates of the same
+  # biological condition share a colour and you can judge their concordance.
+  cond     <- factor(ss$Condition)
+  cond_col <- as.integer(cond)
+  # Short labels: replicate number only, to reduce clutter.
+  short_lab <- paste0("R", ss$Replicate)
+
+  render_plot(function() {
+    mds <- plotMDS(cpm(y, log = TRUE), plot = FALSE)   # compute coords only
+    plot(mds$x, mds$y, col = cond_col, pch = 19, cex = 1.6,
+         xlab = paste0("Leading logFC dim 1"),
+         ylab = paste0("Leading logFC dim 2"),
+         main = paste(tag, norm_tag, "MDS"))
+    text(mds$x, mds$y, labels = short_lab, pos = 1, cex = 0.8)  # offset below point
+    legend("topright", legend = levels(cond), col = seq_along(levels(cond)),
+           pch = 19, bty = "n", title = "Condition")
+  }, paste0(base, "_MDS"))
+
+  render_plot(function() {
     plotSmear(result, main = paste(tag, norm_tag, "smear (MA)"))
     abline(h = c(-opt$lfc, opt$lfc), col = "blue", lty = 2)
-  }, error = function(e) message("  [QC] smear skipped: ", conditionMessage(e)))
-  dev.off()
+  }, paste0(base, "_MA"))
 }
 
 # -----------------------------------------------------------------------------
