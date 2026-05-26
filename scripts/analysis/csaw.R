@@ -290,18 +290,22 @@ save_qc_plots <- function(y, result, group, ss, opt, base, tag, norm_tag) {
   # biological condition share a colour and you can judge their concordance.
   cond     <- factor(ss$Condition)
   cond_col <- as.integer(cond)
-  # Short labels: replicate number only, to reduce clutter.
-  short_lab <- paste0("R", ss$Replicate)
+  # Self-documenting labels: condition + replicate (e.g. "parental R1"), so the
+  # plot is readable without cross-referencing the colour legend.
+  full_lab <- paste(ss$Condition, paste0("R", ss$Replicate))
 
   render_plot(function() {
+    op <- par(mar = c(5, 5, 3, 9), xpd = TRUE); on.exit(par(op))
     mds <- plotMDS(cpm(y, log = TRUE), plot = FALSE)   # compute coords only
-    plot(mds$x, mds$y, col = cond_col, pch = 19, cex = 1.6,
-         xlab = paste0("Leading logFC dim 1"),
-         ylab = paste0("Leading logFC dim 2"),
+    # tiny jitter so coincident replicate points (e.g. concordant B10) don't
+    # stack their labels on top of each other.
+    jx <- jitter(mds$x, amount = diff(range(mds$x)) * 0.01)
+    plot(jx, mds$y, col = cond_col, pch = 19, cex = 1.6,
+         xlab = "Leading logFC dim 1", ylab = "Leading logFC dim 2",
          main = paste(tag, norm_tag, "MDS"))
-    text(mds$x, mds$y, labels = short_lab, pos = 1, cex = 0.8)  # offset below point
-    legend("topright", legend = levels(cond), col = seq_along(levels(cond)),
-           pch = 19, bty = "n", title = "Condition")
+    text(jx, mds$y, labels = full_lab, pos = 1, cex = 0.7)
+    legend("topright", inset = c(-0.32, 0), legend = levels(cond),
+           col = seq_along(levels(cond)), pch = 19, bty = "n", title = "Condition")
   }, paste0(base, "_MDS"))
 
   render_plot(function() {

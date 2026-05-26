@@ -22,7 +22,7 @@ conda activate multiomics-r
 Rscript scripts/analysis/csaw.R \
     --sheet data/processed/sample_sheet.csv \
     --outdir results/exploratory/diff_analysis/csaw \
-    --mark H3K27me3 \
+    --mark H3K4me1 \
     --group1 "B10|none" --group2 "Parental|none"
 
 # Rscript scripts/analysis/diffbind.R \

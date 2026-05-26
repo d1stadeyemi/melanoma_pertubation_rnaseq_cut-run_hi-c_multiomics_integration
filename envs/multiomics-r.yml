@@ -18,6 +18,7 @@ dependencies:
   - r-here
   - r-yaml
   - r-optparse
+  - r-pheatmap
   # Bioconductor
   - bioconductor-deseq2
   - bioconductor-edger
