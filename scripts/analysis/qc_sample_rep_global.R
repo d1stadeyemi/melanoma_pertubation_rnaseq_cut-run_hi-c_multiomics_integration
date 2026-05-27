@@ -1,4 +1,3 @@
-#!/usr/bin/env Rscript
 # =============================================================================
 # qc_sample_rep_global.R — Global, all-sample QC (run BEFORE any differential contrast)
 # =============================================================================

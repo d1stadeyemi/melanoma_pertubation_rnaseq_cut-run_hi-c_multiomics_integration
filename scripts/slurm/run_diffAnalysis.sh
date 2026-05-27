@@ -19,16 +19,17 @@ source $ANACONDA3_SH
 conda activate multiomics-r
 
 # Run differential analysis per mark/contrast:
+# Rscript scripts/analysis/csaw.R \
+#    --sheet data/processed/sample_sheet.csv \
+#    --outdir results/exploratory/diff_analysis/csaw \
+#    --mark H3K4me1 \
+#    --group1 "B10|none" --group2 "Parental|none"
+
 Rscript scripts/analysis/csaw.R \
     --sheet data/processed/sample_sheet.csv \
     --outdir results/exploratory/diff_analysis/csaw \
-    --mark H3K4me1 \
-    --group1 "B10|none" --group2 "Parental|none"
-
-# Rscript scripts/analysis/diffbind.R \
-#     --sheet data/processed/sample_sheet.csv \
-#     --outdir results/exploratory/diff_analysis/diffbind \
-#     --mark H3K27ac \
-#     --group1 "B10|none" --group2 "Parental|none"
+    --mark H3K27ac \
+    --group1 "B10|none" --group2 "Parental|none" \
+    --window 500 --spacing 250 --min_lfc_bg 1
 
 conda deactivate
