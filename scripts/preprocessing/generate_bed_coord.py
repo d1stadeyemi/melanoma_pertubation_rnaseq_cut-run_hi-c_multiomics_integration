@@ -188,8 +188,8 @@ def main(input_file, output_dir, coord_col=None, step=STEP, zero_based=False,
          snap_grid=False, allow_partial_end=False):
     bed = generate_bed(input_file, coord_col=coord_col, step=step, zero_based=zero_based,
                        snap_grid=snap_grid, allow_partial_end=allow_partial_end)
-    save_bed(bed, "coordinates_5kb_bins.bed", output_dir)
-    save_txt(bed, "coordinates_5kb_bins.txt", output_dir)
+    save_bed(bed, f"coordinates_{int(step/1000)}kb_bins.bed", output_dir)
+    save_txt(bed, f"coordinates_{int(step/1000)}kb_bins.txt", output_dir)
     print(f"Files saved to {output_dir}")
     print(f"Convention: {conv_name(zero_based)} | step: {step}")
     print(f"Columns: {list(bed.columns)}")

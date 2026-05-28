@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=logs/rf_shap_%j.out
 #SBATCH --error=logs/rf_shap_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
@@ -16,7 +16,7 @@
 module load anaconda3/2024.06
 source $ANACONDA3_SH
 
-MERGED="data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt"
+HIC="data/processed/A375-CompartmentsAcrossConditions.txt"
 CUTRUN="data/processed/cut_run_signal_table.txt"
 FIGS="results/exploratory"
 
@@ -26,9 +26,10 @@ echo "=========================================="
 echo " Epigenetic priming"
 echo "=========================================="
 python scripts/analysis/RF_SHAP.py \
-    $CUTRUN $MERGED \
-    --outdir $FIGS/RF_SHAP_test \
+    $CUTRUN $HIC \
+    --outdir $FIGS/RF_SHAP_log2_mean \
     --comparison both \
+    --features dynamics
 
 # Permutation test for RF and SHAP significance
 #python scripts/analysis/RF_permutation_test.py \
