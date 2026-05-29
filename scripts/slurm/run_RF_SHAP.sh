@@ -27,7 +27,7 @@ echo " Epigenetic priming"
 echo "=========================================="
 python scripts/analysis/RF_SHAP.py \
     $CUTRUN $HIC \
-    --outdir $FIGS/RF_SHAP_log2_mean \
+    --outdir $FIGS/RF_SHAP_log2 \
     --comparison both \
     --features dynamics
 
