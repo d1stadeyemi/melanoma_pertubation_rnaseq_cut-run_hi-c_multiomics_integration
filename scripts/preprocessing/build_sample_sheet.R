@@ -177,5 +177,26 @@ chk(sheet$Peaks[!is.na(sheet$Peaks)], "Peaks")
 message("[INFO] Factor/Treatment x Condition:")
 print(table(paste(sheet$Factor,sheet$Treatment,sep="/"), sheet$Condition))
 if (length(unique(sheet$Batch))==1) message("[INFO] Single batch — no batch term will be used.")
+
+# ---- guard against two folders collapsing to the same biological identity ----
+# Two different SampleIDs (folders) that normalize to the same
+# Condition/Treatment/Factor/Replicate would be silently treated as distinct
+# replicates by csaw/DiffBind — inflating the replicate count with what may be
+# the same sample under two names. Flag this loudly rather than proceeding.
+id_key <- with(sheet, paste(Condition, Treatment, Factor, Replicate, sep = "|"))
+dup_keys <- id_key[duplicated(id_key)]
+if (length(dup_keys) > 0) {
+  clash <- sheet[id_key %in% dup_keys,
+                 c("SampleID", "Condition", "Treatment", "Factor", "Replicate")]
+  clash <- clash[order(paste(clash$Condition, clash$Treatment,
+                             clash$Factor, clash$Replicate)), ]
+  message("\n[ERROR] Multiple folders map to the SAME biological identity ",
+          "(Condition/Treatment/Factor/Replicate). These would be treated as ",
+          "separate replicates of one group — verify they are not the same ",
+          "sample under two folder names, or correct the Replicate numbers:")
+  print(clash, row.names = FALSE)
+  stop("Identity collision in sample sheet; resolve before running analyses.")
+}
+
 write.csv(sheet, opt$out, row.names=FALSE)
 message("[INFO] -> ", opt$out, " (", nrow(sheet), " samples). Inspect before analyses.")
