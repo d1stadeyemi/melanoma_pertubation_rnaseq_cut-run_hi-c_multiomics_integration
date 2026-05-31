@@ -1,6 +1,6 @@
 """
 =============================================================================
-gene_compartment_analysis.py  — STEP 2: gene density across switch categories
+gene_compartment_analysis_2.py  — STEP 2: gene density across switch categories
 =============================================================================
 
 GOAL
@@ -233,8 +233,11 @@ def main():
         tick = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.07
         base_y = top + tick * 0.6
         for k, r in enumerate(sig):
+            # Show significance AND effect size together — stars alone overstate
+            # trivial-but-significant pairs at large n; delta gives honest magnitude.
+            label = f"{r['stars']}  \u03b4={r['cliffs_delta_g1_vs_g2']:+.2f} ({r['effect_magnitude']})"
             _bracket(ax, cat_pos[r["group1"]], cat_pos[r["group2"]],
-                     base_y + k * tick, r["stars"])
+                     base_y + k * tick, label)
         ax.set_ylim(ax.get_ylim()[0], base_y + (len(sig) + 1) * tick)
 
     plt.tight_layout()
