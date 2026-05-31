@@ -293,7 +293,7 @@ def cliffs_delta_fast(x, y):
     lt_per_x = np.searchsorted(ys, x, side="left")
     le_per_x = np.searchsorted(ys, x, side="right")
     gt_per_x = ny - le_per_x
-    d = (int(np.sum(gt_per_x)) - int(np.sum(lt_per_x))) / (nx * ny)
+    d = (int(np.sum(lt_per_x)) - int(np.sum(gt_per_x))) / (nx * ny)
     ad = abs(d)
     if   ad < 0.147: mag = "negligible"
     elif ad < 0.330: mag = "small"

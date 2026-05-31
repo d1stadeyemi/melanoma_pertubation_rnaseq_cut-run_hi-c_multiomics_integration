@@ -36,3 +36,4 @@ dependencies:
   - pip:
     - upsetplot
     - matplotlib-venn
+    - scikit-posthocs
