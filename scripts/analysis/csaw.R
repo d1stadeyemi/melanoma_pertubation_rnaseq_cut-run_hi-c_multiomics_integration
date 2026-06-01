@@ -253,8 +253,46 @@ run_one_normalization <- function(win, bins, ss, design_info, norm_tag,
                     norm_tag, up, 100*up/(up+down), down, 100*down/(up+down)))
   }
 
+  # -----------------------------------------------------------------------------
+  # Volcano plot of the MERGED-REGION results (combineTests output): x = log2FC,
+  # y = -log10(FDR). Significant regions (FDR<thr & |log2FC|>=lfc) are highlighted
+  # and split by direction so the gained/lost balance is visible at a glance.
+  # Drawn from `out` (per-region), since per-window stats are not the unit we test.
+  # -----------------------------------------------------------------------------
+  save_volcano_plot <- function(out, opt, base, tag, norm_tag) {
+    lfc_col <- intersect(c("rep.logFC", "best.logFC"), colnames(out))
+    if (!length(lfc_col)) {
+      message("  [QC] Volcano skipped: no rep.logFC/best.logFC column.")
+      return(invisible(NULL))
+    }
+    lfc_col <- lfc_col[1]
+    x   <- out[[lfc_col]]
+    fdr <- out$FDR
+    ok  <- is.finite(x) & is.finite(fdr) & fdr > 0
+    x   <- x[ok]; fdr <- fdr[ok]
+    y   <- -log10(fdr)
+
+    sig  <- fdr < opt$fdr & abs(x) >= opt$lfc
+    col  <- ifelse(sig & x > 0, "firebrick",
+            ifelse(sig & x < 0, "royalblue", "grey70"))
+
+    render_plot(function() {
+      plot(x, y, pch = 19, cex = 0.5, col = col,
+          xlab = "log2 fold-change (g1 vs g2)",
+          ylab = "-log10(FDR)",
+          main = paste(tag, norm_tag, "volcano"))
+      abline(h = -log10(opt$fdr), col = "grey40", lty = 2)
+      abline(v = c(-opt$lfc, opt$lfc), col = "grey40", lty = 2)
+      legend("topleft", bty = "n", pch = 19, col = c("firebrick","royalblue","grey70"),
+            legend = c(sprintf("up in g1 (n=%d)",   sum(sig & x > 0)),
+                        sprintf("down in g1 (n=%d)",  sum(sig & x < 0)),
+                        "n.s."))
+    }, paste0(base, "_volcano"))
+  }
+
   # QC plots for the supplement (PDF for the paper + PNG for fast preview).
   save_qc_plots(y, result, group, ss, opt, base, tag, norm_tag)
+  save_volcano_plot(out, opt, base, tag, norm_tag)
   invisible(out)
 }
 
