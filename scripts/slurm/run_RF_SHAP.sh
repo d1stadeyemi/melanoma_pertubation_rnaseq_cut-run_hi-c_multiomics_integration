@@ -41,7 +41,7 @@ echo "=========================================="
 #    --n_perm 2000
 
 # Control analyses 
-python scripts/RF_SHAP_controls.py \
+python scripts/analysis/RF_SHAP_controls.py \
     $CUTRUN $HIC \
     --outdir $FIGS/RF_SHAP_both/controls \
     --comparison both \

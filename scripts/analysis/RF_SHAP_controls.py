@@ -146,9 +146,11 @@ def parse_args():
                         "whose values look like 'chrN...'.")
     p.add_argument("--n_splits", type=int, default=5,
                    help="CV folds for both schemes [default 5].")
+    p.add_argument("--title", default=None,
+                   help="Custom figure title (per comparison). If omitted, a "
+                        "result-stating default is used based on the contrast.")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
-
 
 # =============================================================================
 # Helpers
@@ -369,7 +371,7 @@ def run_comparison(df, feat_names, comp, args, chrom_series):
     delta_df = pd.DataFrame(delta_rows)
 
     # --- figure --------------------------------------------------------------
-    _plot_grid(summary_df, spec, args.outdir, args.model)
+    _plot_grid(summary_df, spec, args.outdir, args.model, title=args.title)
 
     return {
         "summary": summary_df,
@@ -384,13 +386,17 @@ def run_comparison(df, feat_names, comp, args, chrom_series):
 # =============================================================================
 # Figure
 # =============================================================================
-def _plot_grid(summary_df, spec, outdir, model_name):
+def _plot_grid(summary_df, spec, outdir, model_name, title=None):
     os.makedirs(outdir, exist_ok=True)
     schemes = list(dict.fromkeys(summary_df["cv_scheme"]))  # preserve order
     colors = {"standard": "#1A5276", "chromosome": "#C0392B"}
+    nice = {"standard": "Standard 5-fold CV",
+            "chromosome": "Chromosome-held-out CV"}
     width = 0.38
 
-    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    fig, ax = plt.subplots(figsize=(8.4, 5.2))
+    ax.yaxis.grid(True, color="#E5E9EC", lw=1, zorder=0)
+    ax.set_axisbelow(True)
     xbase = np.arange(len(VARIANTS))
     for k, scheme in enumerate(schemes):
         means, stds = [], []
@@ -400,31 +406,38 @@ def _plot_grid(summary_df, spec, outdir, model_name):
             means.append(float(r["mean_auroc"].iloc[0]) if len(r) else np.nan)
             stds.append(float(r["std_auroc"].iloc[0]) if len(r) else 0.0)
         off = (k - (len(schemes) - 1) / 2) * width
-        bars = ax.bar(xbase + off, means, width, yerr=stds, capsize=3,
-                      color=colors.get(scheme, "#888"), alpha=0.9,
-                      edgecolor="white", linewidth=0.6,
-                      label=f"{scheme} CV")
-        for bar, m in zip(bars, means):
+        bars = ax.bar(xbase + off, means, width, yerr=stds, capsize=4,
+                      color=colors.get(scheme, "#888"), alpha=0.92,
+                      edgecolor="white", linewidth=0.8, zorder=3,
+                      label=nice.get(scheme, f"{scheme} CV"),
+                      error_kw=dict(lw=1.3, ecolor="#333"))
+        for bar, m, s in zip(bars, means, stds):
             if np.isfinite(m):
-                ax.text(bar.get_x() + bar.get_width() / 2, m + 0.012,
-                        f"{m:.2f}", ha="center", va="bottom", fontsize=8)
+                ax.text(bar.get_x() + bar.get_width() / 2, m + s + 0.018,
+                        f"{m:.2f}", ha="center", va="bottom", fontsize=10.5,
+                        zorder=4)
 
-    ax.axhline(0.5, color="black", lw=0.8, ls="--", alpha=0.6)
-    ax.text(len(VARIANTS) - 0.5, 0.505, "chance", fontsize=8, color="black",
-            ha="right", va="bottom")
+    ax.axhline(0.5, color="#555", lw=1.0, ls=(0, (5, 4)), zorder=2)
+    ax.text(len(VARIANTS) - 0.55, 0.5, "  chance", fontsize=9.5,
+            color="#555", ha="left", va="center")
     ax.set_xticks(xbase)
     ax.set_xticklabels(["marks\nonly", "PC1\nonly", "marks\n+PC1",
-                        "scrambled"], fontsize=9)
-    ax.set_ylabel("AUROC (mean ± SD across folds)")
+                        "scrambled"], fontsize=11)
+    ax.set_ylabel("AUROC  (mean \u00b1 SD across folds)", fontsize=12.5)
     ax.set_ylim(0.4, 1.0)
-    ax.set_title(f"Control battery — {spec['label']}\n"
-                 f"({'Random Forest' if model_name=='rf' else 'XGBoost'})",
-                 fontweight="bold", fontsize=11, pad=8)
-    ax.legend(frameon=False, fontsize=9, loc="upper right")
+    ax.set_yticks(np.arange(0.4, 1.01, 0.1))
+
+    if title is None:
+        direction = "A\u2192B silencing" if spec["short"] == "compA" \
+                    else "B\u2192A activation"
+        title = f"Histone marks predict {direction}"
+    ax.set_title(title, fontsize=13.5, fontweight="bold", pad=14)
+    ax.legend(frameon=False, fontsize=10.5, loc="upper left",
+              bbox_to_anchor=(0.005, 0.99))
     plt.tight_layout()
     for ext in ("pdf", "png"):
         path = os.path.join(outdir, f"Controls_AUROC_{spec['short']}.{ext}")
-        fig.savefig(path, bbox_inches="tight", dpi=600)
+        fig.savefig(path, bbox_inches="tight", dpi=300)
         print(f"  Saved -> {path}")
     plt.close(fig)
 

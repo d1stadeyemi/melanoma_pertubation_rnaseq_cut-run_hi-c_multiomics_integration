@@ -246,7 +246,7 @@ def step4a(bins, mark_cols, outdir):
                            fontsize=9)
         ax.set_ylabel(f"{mark} change\nlog2(B10/Parental)", labelpad=4)
         ax.set_title(f"{mark}  (KW H={kw_H:.0f}, "
-                     + ("p<1e-300" if kw_p == 0 or kw_p < 1e-300 else f"p={kw_p:.1e})"),
+                     + ("p<1e-300)" if kw_p == 0 or kw_p < 1e-300 else f"p={kw_p:.1e})"),
                      fontweight="bold", fontsize=10)
 
     for ax in axes[len(marks):]:
