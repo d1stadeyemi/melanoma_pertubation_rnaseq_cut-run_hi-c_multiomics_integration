@@ -960,7 +960,7 @@ def _draw_shap_panels(ax_bar, ax_bee, sv, X, feat_names, title_extra=""):
                      fontweight="bold", pad=8)
     ax_bar.set_xlim(0, max(mean_shap) * 1.18)
 
-    feat_order = [feat_names[i] for i in order][::-1]
+    feat_order = [feat_names[i] for i in order[::-1]]
     X_df  = pd.DataFrame(X,  columns=feat_names)[feat_order]
     sv_df = pd.DataFrame(sv, columns=feat_names)[feat_order]
     plt.sca(ax_bee)

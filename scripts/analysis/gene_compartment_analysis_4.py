@@ -139,6 +139,12 @@ def parse_args():
     p.add_argument("--marks", nargs="+", default=list(DEFAULT_MARKS),
                    help="Marks to test (default: H3K27me3 H3K27Ac H3K4me1 H3K9me3).")
     p.add_argument("--gene_name_col", default="gene_name")
+    p.add_argument("--zscore", action="store_true",
+                   help="Z-score each mark's change before plotting so all "
+                        "panels share a comparable spread (use only if a shared "
+                        "raw axis makes a small-magnitude mark like H3K27me3 too "
+                        "flat to see). Stats are ALWAYS run on raw values "
+                        "regardless of this flag.")
     return p.parse_args()
 
 
@@ -173,7 +179,7 @@ def auto_cutrun_coord(cutrun, override):
 # =============================================================================
 # 4a — mark-change by switch category, BIN LEVEL
 # =============================================================================
-def step4a(bins, mark_cols, outdir):
+def step4a(bins, mark_cols, outdir, zscore=False):
     """bins: DataFrame with one row per bin: switch_cat + <mark> change columns.
     Runs KW + Dunn + Cliff's delta per mark at the BIN level (no pseudoreplication)."""
     cats = [c for c in CAT_ORDER if c in bins["switch_cat"].unique()]
@@ -186,18 +192,49 @@ def step4a(bins, mark_cols, outdir):
     axes = np.atleast_1d(axes).flatten()
     all_stats = []
 
+    # --- PASS 1: shared y-limit across ALL marks (view only; data untouched) ---
+    # Stats below are ALWAYS computed on RAW values; only the DRAWN values and
+    # the axis window are affected by --zscore / clipping. This makes the four
+    # panels visually comparable without deleting any data point.
+    def _draw_vals(mark):
+        """Per-category values to PLOT for a mark: raw, or z-scored across all
+        bins of that mark (mean/std from the pooled mark column)."""
+        col = mark_cols[mark]
+        raw = {c: bins.loc[bins["switch_cat"] == c, col].dropna().values
+               for c in cats}
+        if not zscore:
+            return raw
+        pooled = bins[col].dropna().values
+        mu, sd = float(np.mean(pooled)), float(np.std(pooled))
+        if sd == 0:
+            return raw
+        return {c: (v - mu) / sd for c, v in raw.items()}
+
+    pooled_plot = np.concatenate(
+        [np.concatenate([_draw_vals(m)[c] for c in cats]) for m in marks])
+    ylo, yhi = np.percentile(pooled_plot, [1, 99])   # clip VIEW to 1-99th pct
+    span = (yhi - ylo) if yhi > ylo else 1.0
+    n_pairs = len(cats) * (len(cats) - 1) // 2          # 6 brackets max
+    SHARED_YLIM = (ylo - 0.40 * span,                   # small bottom pad
+                   yhi + (0.60 + 0.085 * n_pairs) * span)  # top headroom scales with #brackets
+    ylab = ("standardized mark change (z)" if zscore
+            else "mark change  log2(B10/Parental)")
+
     for ax, mark in zip(axes, marks):
         col = mark_cols[mark]
+        # RAW values -> statistics (never clipped, never z-scored)
         data = {c: bins.loc[bins["switch_cat"] == c, col].dropna().values
                 for c in cats}
-        plot_data = [data[c] for c in cats]
+        # PLOT values -> drawing (z-scored if requested)
+        pdata = _draw_vals(mark)
+        plot_data = [pdata[c] for c in cats]
         if any(len(d) < 2 for d in plot_data):
             ax.set_visible(False); continue
 
-        # KW omnibus
-        kw_H, kw_p = kruskal(*plot_data)
+        # KW omnibus on RAW data
+        kw_H, kw_p = kruskal(*[data[c] for c in cats])
 
-        # violin + box + zero line
+        # violin + box + zero line (on PLOT data)
         ax.axhline(0, color="#888888", lw=0.8, linestyle="--", zorder=0)
         parts = ax.violinplot(plot_data, showmedians=False, showextrema=False,
                               widths=0.75)
@@ -209,11 +246,14 @@ def step4a(bins, mark_cols, outdir):
                    boxprops=dict(facecolor="white", alpha=0.9, linewidth=0.7),
                    whiskerprops=dict(linewidth=0.7), capprops=dict(linewidth=0.7))
 
-        # Dunn + Cliff's delta (bin level)
+        # SHARED axis (identical for every mark)
+        ax.set_ylim(*SHARED_YLIM)
+
+        # Dunn + Cliff's delta (bin level, RAW data)
         pair_rows = []
         if sp is not None:
             long_df = pd.DataFrame({
-                "val": np.concatenate(plot_data),
+                "val": np.concatenate([data[c] for c in cats]),
                 "cat": np.concatenate([[c] * len(data[c]) for c in cats])})
             dunn = sp.posthoc_dunn(long_df, val_col="val", group_col="cat",
                                    p_adjust="fdr_bh")
@@ -227,24 +267,25 @@ def step4a(bins, mark_cols, outdir):
                                   "stars": _p_to_stars(p_pair)})
             all_stats.extend(pair_rows)
 
-            # brackets: significant pairs, closest first, with delta+magnitude
+            # brackets anchored to the TOP of the shared window (closest pairs lowest)
             cat_pos = {c: i + 1 for i, c in enumerate(cats)}
-            sig = [r for r in pair_rows if r["dunn_p_BH"] < 0.05]
+            sig = list(pair_rows)   # show ALL pairs; non-significant print as "ns"
             sig.sort(key=lambda r: abs(cat_pos[r["group1"]] - cat_pos[r["group2"]]))
-            top = max(np.max(d) for d in plot_data)
-            tick = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.07
-            base_y = top + tick * 0.6
-            for k, r in enumerate(sig):
-                label = (f"{r['stars']} \u03b4={r['cliffs_delta_g1_vs_g2']:+.2f} "
-                         f"({r['effect_magnitude']})")
-                _bracket(ax, cat_pos[r["group1"]], cat_pos[r["group2"]],
-                         base_y + k * tick, label)
-            ax.set_ylim(ax.get_ylim()[0], base_y + (len(sig) + 1) * tick)
+            if sig:
+                # farthest-apart pairs on top so longer brackets don't cross shorter ones
+                sig.sort(key=lambda r: abs(cat_pos[r["group1"]] - cat_pos[r["group2"]]))
+                tick = span * 0.12                       # span from Pass-1
+                base_y = yhi + 0.35 * span                # start just above the data
+                for k, r in enumerate(sig):
+                    label = (f"{r['stars']} \u03b4={r['cliffs_delta_g1_vs_g2']:+.2f} "
+                             f"({r['effect_magnitude']})")
+                    _bracket(ax, cat_pos[r["group1"]], cat_pos[r["group2"]],
+                             base_y + k * tick, label)
 
         ax.set_xticks(range(1, len(cats) + 1))
         ax.set_xticklabels([SWITCH_LABELS[c] for c in cats], rotation=20, ha="right",
                            fontsize=9)
-        ax.set_ylabel(f"{mark} change\nlog2(B10/Parental)", labelpad=4)
+        ax.set_ylabel(f"{mark}\n{ylab}", labelpad=4)
         ax.set_title(f"{mark}  (KW H={kw_H:.0f}, "
                      + ("p<1e-300)" if kw_p == 0 or kw_p < 1e-300 else f"p={kw_p:.1e})"),
                      fontweight="bold", fontsize=10)
@@ -381,7 +422,7 @@ def main():
     print(f"[INFO] Bins with switch category + mark change: {len(bins):,}")
 
     print("\n[INFO] === Step 4a: mark change by switch category (bin level) ===")
-    step4a(bins, mark_cols, args.outdir)
+    step4a(bins, mark_cols, args.outdir, zscore=args.zscore)
 
     if args.step3:
         print("\n[INFO] === Step 4b: mark change vs expression (integrative) ===")
