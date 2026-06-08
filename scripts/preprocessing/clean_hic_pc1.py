@@ -23,8 +23,8 @@ COLUMN BLOCKS KEPT (raw header text -> output name)
     Chr, Start, End                    -> chr, start, end
     Parental DMSO                      -> Parental_DMSO
     Parental UNC                       -> Parental_UNC
-    Bottom10-DMSO (fixed inverted)     -> Bottom10-DMSO_fixed_inverted
-    Bottom10-UNC (fixed inverted)      -> Bottom10-UNC_fixed_inverted
+    Bottom10-DMSO (fixed inverted)     -> Bottom10-DMed
+    Bottom10-UNC (fixed inverted)      -> Bottom10-Ued
     Control-R1                         -> Parental_orig     (baseline parental PC1)
     Bottom10-R1                        -> Bottom10_orig     (baseline B10 PC1)
 
@@ -86,8 +86,8 @@ def clean_hic_pc1(input_file, sheet, header_row):
         "End":                              "end",
         "Parental DMSO":                    "Parental_DMSO",
         "Parental UNC":                     "Parental_UNC",
-        "Bottom10-DMSO (fixed inverted)":   "Bottom10-DMSO_fixed_inverted",
-        "Bottom10-UNC (fixed inverted)":    "Bottom10-UNC_fixed_inverted",
+        "Bottom10-DMSO (fixed inverted)":   "Bottom10-DMSO",
+        "Bottom10-UNC (fixed inverted)":    "Bottom10-UNC",
         "Control-R1":                       "Parental_orig",
         "Bottom10-R1":                      "Bottom10_orig",
         # Parental DMSO -> UNC (drug axis, parental)

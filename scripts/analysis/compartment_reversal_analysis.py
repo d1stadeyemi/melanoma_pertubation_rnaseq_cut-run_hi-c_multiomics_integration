@@ -14,12 +14,6 @@ THE CAUSAL LOGIC (read first)
         control — otherwise UNC just perturbs compartments in any cell).
   We also extract treatment-UNRESPONSIVE bins (negative set).
 
-  NORMALIZATION NOTE — why this analysis is valid NOW, without spike-in:
-    PC1 / compartment identity is derived from Hi-C contact structure, NOT from
-    CUT&RUN signal magnitude. So compartment switching/reversal does not depend
-    on H3K27me3 quantitation and is unaffected by the spike-in requirement that
-    governs H3K27me3 *amount* comparisons (handle that separately, with spike-in).
-
 INPUTS (from clean_hic_pc1.py output)
   --pc1   A375-CompartmentsAcrossConditions.txt   needs:
             coordinate, chr, start, end
@@ -126,8 +120,10 @@ def parse_args():
     # which numeric PC1 columns to use for the continuous (ΔPC1) view
     p.add_argument("--pc1_parental", default="Parental_orig")
     p.add_argument("--pc1_b10", default="Bottom10_orig")
-    p.add_argument("--pc1_parental_unc", default="UNC-DMSO_Parental")
-    p.add_argument("--pc1_b10_unc", default="UNC-DMSO_Bottom10")
+    p.add_argument("--pc1_parental_dmso", default="Parental_DMSO")
+    p.add_argument("--pc1_b10_dmso", default="Bottom10-DMSO")
+    p.add_argument("--pc1_parental_unc", default="Parental_UNC")
+    p.add_argument("--pc1_b10_unc", default="Bottom10-UNC")
     # switch-call column groups
     p.add_argument("--mig_cols", nargs=3,
                    default=["P->B10_Both_original", "P->B10_Switch_Orig", "P->B10_Shift_Orig"],
