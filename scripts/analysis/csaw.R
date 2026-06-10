@@ -1,6 +1,6 @@
 # =============================================================================
 # csaw.R — Window-based differential binding for BROAD histone marks
-#          (including: interaction test, baseline stratification, IgG-control
+#          (v2: + interaction test, baseline stratification, IgG-control
 #           filtering, replicate-correlation QC)
 # =============================================================================
 #
@@ -289,17 +289,19 @@ build_design <- function(ss, opt) {
     coef <- ncol(design)                                    # last coef = g1 vs g2
     qc_group <- factor(ss$Condition)
   } else {
-    # Match --cond_ref/--treat_ref to the sheet's actual casing (relevel needs an exact level)
-    cref <- unique(ss$Condition)[tolower(unique(ss$Condition)) == tolower(opt$cond_ref)]
-    tref <- unique(ss$Treatment)[tolower(unique(ss$Treatment)) == tolower(opt$treat_ref)]
+    # Resolve the requested reference levels to the actual sheet casing, so
+    # --cond_ref/--treat_ref are case-insensitive (relevel() needs an EXACT level).
+    cond_f <- factor(ss$Condition); treat_f <- factor(ss$Treatment)
+    cref <- levels(cond_f)[tolower(levels(cond_f)) == tolower(opt$cond_ref)]
+    tref <- levels(treat_f)[tolower(levels(treat_f)) == tolower(opt$treat_ref)]
     if (length(cref) != 1)
-      stop("Need exactly one Condition level matching '", opt$cond_ref, "'. Found: ",
-          paste(unique(ss$Condition), collapse = ", "))
+      stop("--cond_ref '", opt$cond_ref, "' not found among Condition levels: ",
+           paste(levels(cond_f), collapse = ", "))
     if (length(tref) != 1)
-      stop("Need exactly one Treatment level matching '", opt$treat_ref, "'. Found: ",
-          paste(unique(ss$Treatment), collapse = ", "))
-    Condition <- relevel(factor(ss$Condition), ref = cref)
-    Treatment <- relevel(factor(ss$Treatment), ref = tref)
+      stop("--treat_ref '", opt$treat_ref, "' not found among Treatment levels: ",
+           paste(levels(treat_f), collapse = ", "))
+    Condition <- relevel(cond_f, ref = cref)
+    Treatment <- relevel(treat_f, ref = tref)
     design <- if (has_batch) model.matrix(~ batch + Condition * Treatment) else
                              model.matrix(~ Condition * Treatment)
     if (has_batch) message("[INFO] >1 batch -> ~Batch + Condition*Treatment.")
@@ -447,20 +449,38 @@ render_plot <- function(draw_fn, base_path, w = 7, h = 6) {
 # -----------------------------------------------------------------------------
 save_qc_plots <- function(y, result, group, ss, opt, base, tag, norm_tag) {
   library(edgeR)
-  cond     <- factor(ss$Condition)
-  cond_col <- as.integer(cond)
-  full_lab <- paste(ss$Condition, paste0("R", ss$Replicate))
+  # Treatment-aware grouping & labels. A UNC contrast has both groups in the
+  # SAME Condition, so colouring by Condition alone collapses to one colour and
+  # makes treated/untreated indistinguishable. Colour by Condition+Treatment and
+  # label points with the treatment + replicate so each sample is unambiguous.
+  # Treatment-aware encoding: SHAPE = Condition, COLOUR = Treatment. A UNC
+  # contrast has both groups in the SAME Condition, so colouring by Condition
+  # collapses to one colour and hides treated vs untreated. Encoding Treatment as
+  # colour fixes that, and the scheme scales straight to the 4-cell interaction
+  # MDS (2 shapes x 2 colours = the four cells).
+  cond_f   <- factor(ss$Condition)
+  treat_f  <- factor(ss$Treatment)
+  pch_pool <- c(16, 17, 15, 18, 8, 7)                 # circle, triangle, square, diamond, ...
+  col_pool <- c("grey30", "firebrick", "royalblue", "darkgreen", "purple", "orange")
+  pt_pch   <- pch_pool[as.integer(cond_f)]            # shape  encodes Condition
+  pt_col   <- col_pool[as.integer(treat_f)]           # colour encodes Treatment
+  rep_lab  <- paste0("R", ss$Replicate)
+  full_lab <- paste0(ss$Condition, " ", ss$Treatment, " R", ss$Replicate)
 
   render_plot(function() {
-    op <- par(mar = c(5, 5, 3, 9), xpd = TRUE); on.exit(par(op))
+    op <- par(mar = c(5, 5, 3, 11), xpd = TRUE); on.exit(par(op))
     mds <- plotMDS(cpm(y, log = TRUE), plot = FALSE)
     jx <- jitter(mds$x, amount = diff(range(mds$x)) * 0.01)
-    plot(jx, mds$y, col = cond_col, pch = 19, cex = 1.6,
+    plot(jx, mds$y, pch = pt_pch, col = pt_col, cex = 1.8, lwd = 2,
          xlab = "Leading logFC dim 1", ylab = "Leading logFC dim 2",
          main = paste(tag, norm_tag, "MDS"))
-    text(jx, mds$y, labels = full_lab, pos = 1, cex = 0.7)
-    legend("topright", inset = c(-0.32, 0), legend = levels(cond),
-           col = seq_along(levels(cond)), pch = 19, bty = "n", title = "Condition")
+    text(jx, mds$y, labels = rep_lab, pos = 1, cex = 0.7)
+    legend("topright", inset = c(-0.34, 0), legend = levels(cond_f),
+           pch = pch_pool[seq_along(levels(cond_f))], col = "black",
+           bty = "n", title = "Condition (shape)")
+    legend("bottomright", inset = c(-0.34, 0), legend = levels(treat_f),
+           pch = 16, col = col_pool[seq_along(levels(treat_f))],
+           bty = "n", title = "Treatment (colour)")
   }, paste0(base, "_MDS"))
 
   render_plot(function() {
@@ -468,16 +488,20 @@ save_qc_plots <- function(y, result, group, ss, opt, base, tag, norm_tag) {
     abline(h = c(-opt$lfc, opt$lfc), col = "blue", lty = 2)
   }, paste0(base, "_MA"))
 
-  # replicate-correlation heatmap (Spearman on per-window log-CPM)
+  # replicate-correlation heatmap (Spearman on per-window log-CPM), with samples
+  # reordered so replicates of a group sit together (block structure visible) and
+  # labelled by Condition+Treatment+Replicate instead of the generic SampleID.
   render_plot(function() {
-    M <- cor(cpm(y, log = TRUE), method = "spearman")
-    op <- par(mar = c(9, 9, 3, 2)); on.exit(par(op))
+    ord  <- order(ss$Condition, ss$Treatment, ss$Replicate)
+    M    <- cor(cpm(y, log = TRUE)[, ord], method = "spearman")
+    labs <- full_lab[ord]
+    op <- par(mar = c(11, 11, 3, 2)); on.exit(par(op))
     n <- ncol(M)
     image(seq_len(n), seq_len(n), t(M[n:1, , drop = FALSE]),
           axes = FALSE, xlab = "", ylab = "", zlim = c(min(M), 1),
           main = paste(tag, norm_tag, "replicate Spearman"))
-    axis(1, at = seq_len(n), labels = colnames(M), las = 2, cex.axis = 0.7)
-    axis(2, at = seq_len(n), labels = rev(colnames(M)), las = 2, cex.axis = 0.7)
+    axis(1, at = seq_len(n), labels = labs, las = 2, cex.axis = 0.7)
+    axis(2, at = seq_len(n), labels = rev(labs), las = 2, cex.axis = 0.7)
     for (i in seq_len(n)) for (j in seq_len(n))
       text(j, n - i + 1, sprintf("%.2f", M[i, j]), cex = 0.6)
   }, paste0(base, "_repcor"))

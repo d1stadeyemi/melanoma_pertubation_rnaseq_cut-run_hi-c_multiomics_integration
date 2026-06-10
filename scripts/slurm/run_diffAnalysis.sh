@@ -19,19 +19,19 @@ source $ANACONDA3_SH
 conda activate multiomics-r
 
 # Run differential analysis per mark/contrast:
-# Rscript scripts/analysis/csaw.R \
-#    --sheet data/processed/sample_sheet.csv \
-#    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_B10unc \
-#    --mark H3K27me3 \
-#    --group1 "B10|UNC" --group2 "B10|none" 
+Rscript scripts/analysis/csaw.R \
+    --sheet data/processed/sample_sheet.csv \
+    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_B10unc \
+    --mark H3K27me3 \
+    --group1 "B10|UNC" --group2 "B10|none" 
 # Default: --test contrast
 
 # Run differential analysis per mark/contrast:
-# Rscript scripts/analysis/csaw.R \
-#    --sheet data/processed/sample_sheet.csv \
-#    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_Parunc \
-#    --mark H3K27me3 \
-#    --group1 "Parental|UNC" --group2 "Parental|none" 
+Rscript scripts/analysis/csaw.R \
+    --sheet data/processed/sample_sheet.csv \
+    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_Parunc \
+    --mark H3K27me3 \
+    --group1 "Parental|UNC" --group2 "Parental|none" 
 # Default: --test contrast
 
 # Run differential analysis per mark/interaction:
