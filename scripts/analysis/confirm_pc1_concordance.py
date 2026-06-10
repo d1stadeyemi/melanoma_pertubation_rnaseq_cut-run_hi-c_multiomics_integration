@@ -57,7 +57,6 @@ def concordance(a, b, name_a, name_b):
                 a=a, b=b, diff=diff, mean_d=mean_diff, loa=(loa_lo, loa_hi),
                 la=name_a, lb=name_b)
 
-
 def make_plots(results, outpath):
     fig, axes = plt.subplots(2, 2, figsize=(11, 10))
     for col, r in enumerate(results):
