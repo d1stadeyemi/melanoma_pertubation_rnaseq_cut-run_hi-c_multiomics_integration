@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --time=02:30:00
 #SBATCH --output=logs/diff_analysis_%j.out
 #SBATCH --error=logs/diff_analysis_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
@@ -19,27 +19,34 @@ source $ANACONDA3_SH
 conda activate multiomics-r
 
 # Run differential analysis per mark/contrast:
-Rscript scripts/analysis/csaw.R \
+Rscript scripts/analysis/csaw_20261106.R \
     --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_B10unc \
+    --outdir results/exploratory/diff_analysis/csaw_20261106/H3K27me3_B10unc \
     --mark H3K27me3 \
     --group1 "B10|UNC" --group2 "B10|none" 
+    --peaks
+    --baseline_group "Parental|none"
+    --spikein data/processed/sample_sheet.csv
 # Default: --test contrast
 
 # Run differential analysis per mark/contrast:
-Rscript scripts/analysis/csaw.R \
+Rscript scripts/analysis/csaw_20261106.R \
     --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_Parunc \
+    --outdir results/exploratory/diff_analysis/csaw_20261106/H3K27me3_Parunc \
     --mark H3K27me3 \
     --group1 "Parental|UNC" --group2 "Parental|none" 
+    --peaks
+    --baseline_group "B10|none"
+    --spikein data/processed/sample_sheet.csv
 # Default: --test contrast
 
 # Run differential analysis per mark/interaction:
-Rscript scripts/analysis/csaw.R \
+Rscript scripts/analysis/csaw_20261106.R \
     --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_interaction \
+    --outdir results/exploratory/diff_analysis/csaw_20261106/H3K27me3_interaction \
     --mark H3K27me3 \
     --test interaction
+    --spikein data/processed/sample_sheet.csv
 # Default reference levels:
 # --cond_ref Parental --cond_alt B10 --treat_ref none --treat_alt UNC 
 
