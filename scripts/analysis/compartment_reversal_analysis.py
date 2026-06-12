@@ -167,6 +167,10 @@ def build_reversal_table(df, args):
         return "other"
     df["reversal_status"] = df.apply(reversal_status, axis=1)
     df["parental_unc_moved"] = df["punc_switch"] != "Stable"
+    df["categorical_specific_reversal"] = (
+        (df["reversal_status"] == "reverted") & 
+        (df["punc_switch"] == "Stable")
+    ).fillna(False)
 
     pu  = pd.to_numeric(df[args.pc1_parental_unc], errors="coerce")
     pdm = pd.to_numeric(df[args.pc1_parental_dmso], errors="coerce")
@@ -811,6 +815,8 @@ def export_gene_lists(df, args, outdir):
     df[cc] = df[cc].astype(str).str.strip()
 
     keep = [cc, "mig_switch", "reversal_status", "baseline_class"]
+    if "categorical_specific_reversal" in df.columns:
+        keep.append("categorical_specific_reversal")
     if "specific_reversal" in df.columns:
         keep.append("specific_reversal")
     g = genes.merge(df[keep], on=cc, how="inner")
@@ -826,6 +832,16 @@ def export_gene_lists(df, args, outdir):
     write_set(g.loc[g["mig_switch"] == "A_to_B", gn], "switcher_A_to_B")
     write_set(g.loc[g["mig_switch"] == "B_to_A", gn], "switcher_B_to_A")
     write_set(g.loc[g["reversal_status"] == "reverted", gn], "reverted_under_UNC")
+    
+    # Categorical-specific reversal (reverted in B10, stable in parental)
+    cat_spec_genes = g.loc[g["categorical_specific_reversal"] == True, gn]
+    write_set(cat_spec_genes, "categorical_specific_reversal")
+    n_cat_spec_bins = (df["categorical_specific_reversal"]).sum()
+    n_cat_spec_genes = len(set(s for s in cat_spec_genes if s and s.lower() != "nan"))
+    total_sw = len(df[df["mig_switch"].isin(["A_to_B", "B_to_A"])])
+    pct_cat_spec = (n_cat_spec_bins / total_sw * 100) if total_sw > 0 else 0
+    print(f"  [INFO] Categorical-specific: {n_cat_spec_bins} bins ({pct_cat_spec:.1f}% of switchers), {n_cat_spec_genes} genes")
+    
     if "specific_reversal" in g.columns:
         write_set(g.loc[g["specific_reversal"] == True, gn],
                   "migration_specific_reversal")
@@ -837,6 +853,8 @@ def export_gene_lists(df, args, outdir):
         write_set(g.loc[g["baseline_class"] == "Stable_B", gn], "stable_B")
 
     audit_cols = [gn, cc, "mig_switch", "reversal_status", "baseline_class"]
+    if "categorical_specific_reversal" in g.columns:
+        audit_cols.append("categorical_specific_reversal")
     if "specific_reversal" in g.columns:
         audit_cols.append("specific_reversal")
     g[audit_cols].to_csv(
@@ -870,9 +888,11 @@ def main():
     n_sw = len(sw)
     rev_rate = (sw["reversal_status"] == "reverted").mean() if n_sw else np.nan
     unresp_rate = (sw["reversal_status"] == "unresponsive").mean() if n_sw else np.nan
+    cat_spec_rate = (sw["categorical_specific_reversal"]).mean() if n_sw else np.nan
     print(f"[INFO] Migration switchers: {n_sw:,}  (across {df['_chrom'].nunique()} chromosomes)")
     print(f"[INFO] Reverted under UNC-in-B10: {rev_rate:.1%}")
     print(f"[INFO] Unresponsive to UNC-in-B10: {unresp_rate:.1%}")
+    print(f"[INFO] Categorical-specific reversal: {(sw['categorical_specific_reversal']).sum():,} bins ({cat_spec_rate:.1%})")
 
     df.to_csv(os.path.join(args.outdir, "Reversal_classified.txt"),
               sep="\t", index=False)
