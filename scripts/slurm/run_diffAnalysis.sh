@@ -21,9 +21,10 @@ conda activate multiomics-r
 # Run differential analysis per mark/contrast:
 Rscript scripts/analysis/csaw.R \
     --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw_no_batch/H3K27me3_B10unc \
+    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_B10unc \
     --mark H3K27me3 \
     --group1 "B10|UNC" --group2 "B10|none" \
+    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
     --peaks sheet \
     --baseline_group "Parental|none" \
     --spikein sheet
@@ -32,9 +33,10 @@ Rscript scripts/analysis/csaw.R \
 # Run differential analysis per mark/contrast:
 Rscript scripts/analysis/csaw.R \
     --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw_no_batch/H3K27me3_Parunc \
+    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_Parunc \
     --mark H3K27me3 \
     --group1 "Parental|UNC" --group2 "Parental|none" \
+    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
     --peaks sheet \
     --baseline_group "B10|none" \
     --spikein sheet
@@ -43,9 +45,10 @@ Rscript scripts/analysis/csaw.R \
 # Run differential analysis per mark/interaction:
 Rscript scripts/analysis/csaw.R \
     --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw_no_batch/H3K27me3_interaction \
+    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_interaction \
     --mark H3K27me3 \
     --test interaction \
+    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
     --peaks sheet \
     --spikein sheet
 # Default reference levels:

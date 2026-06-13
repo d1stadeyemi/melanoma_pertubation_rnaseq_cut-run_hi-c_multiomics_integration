@@ -42,10 +42,11 @@ WHAT IT COMPUTES  (effect sizes first; bin-level p-values are PSEUDOREP_, not fo
        the four cross-tab cells and the background universe.
 
 USAGE
-    python cut_run_pc1_integration.py \
+    python track1_integrate.py \
         --reversal    results/exploratory/reversal/Reversal_classified.txt \
         --marks_delta results/exploratory/mark_signal_250kb/marks_delta_250kb.txt \
         --csaw_sig    results/exploratory/diff_analysis/csaw/H3K27me3_interaction/H3K27me3_interaction_libsize_significant.csv \
+        --csaw_all    results/exploratory/diff_analysis/csaw/H3K27me3_interaction/H3K27me3_interaction_libsize_all_regions.csv \
         --gene_list   data/processed/GeneListTSShg19_cleaned.txt \
         --outdir      results/exploratory/track1
 ================================================================================
@@ -256,6 +257,20 @@ def build_table(args):
     print(f"[INFO] bins overlapping a sig region: {int(sig.sum()):,}  "
           f"(down={int(down.sum())}, up={int(up.sum())})")
 
+    # OPTIONAL: csaw TESTED universe (from all_regions) -> restrict the csaw-down
+    # cross-tab denominator so untested bins don't swell the 'not down' cell.
+    if args.csaw_all:
+        allreg = load_csaw_sig(args.csaw_all)
+        tested, _, _ = overlap_flags(df, allreg)
+        df["h3k27me3_tested"] = tested
+        print(f"[INFO] csaw all_regions: {len(allreg):,} tested regions | "
+              f"{int(tested.sum()):,}/{len(df):,} bins in the tested universe "
+              "(csaw-down cross-tab restricted to these).")
+    else:
+        df["h3k27me3_tested"] = True
+        print("[INFO] --csaw_all not given: csaw-down cross-tab uses ALL bins "
+              "(untested bins count as 'not down' -> OR is mildly anti-conservative).")
+
     # compartment reversal flag (headline 437-set)
     if "migration_specific_reversal" in df.columns:
         df["comp_reversal"] = df["migration_specific_reversal"].astype(bool)
@@ -325,8 +340,8 @@ def concentration_block(df, args):
 
     obs, lo, hi = block_bootstrap(cd, chrom, args.n_boot, args.boot_seed)
     med_rev = np.nanmedian(db10[rev]); med_non = np.nanmedian(db10[~rev])
-    print(f"\n[CONCENTRATION] dH3K27me3_b10_treat at reversal vs other switchers")
-    print(f"   median(reversal)={med_rev:+.3f}  median(other)={med_non:+.3f}")
+    print(f"\n[CONCENTRATION] dH3K27me3_b10_treat at reversal vs non-reversal bins")
+    print(f"   median(reversal)={med_rev:+.3f}  median(non-reversal)={med_non:+.3f}")
     print(f"   Cliff's delta (lt-gt; + = reversal more eroded)={obs:+.3f} [{lo:+.3f},{hi:+.3f}]")
     return dict(cliffs=(obs, lo, hi), med_rev=med_rev, med_non=med_non)
 
@@ -367,7 +382,7 @@ def fig_crosstab(ct, outdir):
                     fontsize=14, fontweight="bold",
                     color="white" if M[i, j] > M.max() * 0.6 else "black")
     ax.set_xticks([0, 1]); ax.set_xticklabels(["H3K27me3\neroded", "H3K27me3\nstable"])
-    ax.set_yticks([0, 1]); ax.set_yticklabels(["compartment\nreversal", "other\nswitchers"])
+    ax.set_yticks([0, 1]); ax.set_yticklabels(["compartment\nreversal", "non-reversal\nbins"])
     o, olo, ohi = ct["OR"]
     ax.set_title(f"Compartment reversal x H3K27me3 erosion ({ct['label']})\n"
                  f"OR={o:.1f} [{olo:.1f}, {ohi:.1f}]   (chrom block-bootstrap)",
@@ -424,7 +439,7 @@ def fig_concentration(df, conc, outdir):
     for pc, col in zip(parts["bodies"], [COL["stay"], COL["both"]]):
         pc.set_facecolor(col); pc.set_alpha(0.6)
     ax.axhline(0, color="#888", lw=0.8, ls="--")
-    ax.set_xticks([1, 2]); ax.set_xticklabels(["other switchers", "compartment\nreversal"])
+    ax.set_xticks([1, 2]); ax.set_xticklabels(["non-reversal\nbins", "compartment\nreversal"])
     ax.set_ylabel("\u0394H3K27me3  (B10+UNC \u2212 B10)")
     cobs, clo, chi = conc["cliffs"]
     ax.set_title("UNC-driven H3K27me3 change at reversal bins\n"
@@ -520,6 +535,8 @@ def write_stats(df, ct_csaw, ct_delta, conc, coup, outdir):
         fh.write(f"n_chromosomes\t{df['_chrom'].nunique()}\n")
         fh.write(f"compartment_reversal_bins\t{int(df['comp_reversal'].sum())}\n")
         fh.write(f"h3k27me3_int_down_bins\t{int(df['h3k27me3_int_down'].sum())}\n")
+        if "h3k27me3_tested" in df.columns:
+            fh.write(f"csaw_tested_bins\t{int(df['h3k27me3_tested'].sum())}\n")
         fh.write("# === HEADLINE effect sizes (chromosome block-bootstrap 95% CI) ===\n")
         for ct in (ct_csaw, ct_delta):
             for k in ("a", "b", "c", "d"):
@@ -555,6 +572,12 @@ def parse_args():
     p.add_argument("--reversal", required=True)
     p.add_argument("--marks_delta", required=True)
     p.add_argument("--csaw_sig", required=True)
+    p.add_argument("--csaw_all", default=None,
+                   help="csaw <tag>_<norm>_all_regions.csv. If given, the csaw-down "
+                        "cross-tab is restricted to bins csaw actually TESTED (overlap "
+                        "any region here), removing the anti-conservative inflation from "
+                        "untested bins defaulting to 'not down'. The delta cross-tab and "
+                        "Cliff's delta are unaffected.")
     p.add_argument("--gene_list", default=None)
     p.add_argument("--coord_col", default="coordinate")
     p.add_argument("--gene_name_col", default="gene_name")
@@ -572,7 +595,10 @@ def main():
     df.to_csv(os.path.join(args.outdir, "Track1_classified.txt"), sep="\t", index=False)
 
     print("\n[INFO] Headline cross-tabs (chromosome block-bootstrap)...")
-    ct_csaw  = crosstab_block(df, "erode_csaw",  "csawdown", args)
+    csaw_df = df[df["h3k27me3_tested"]].copy() if args.csaw_all else df
+    if args.csaw_all:
+        print(f"[INFO] csaw-down cross-tab restricted to {len(csaw_df):,} tested bins.")
+    ct_csaw  = crosstab_block(csaw_df, "erode_csaw",  "csawdown", args)
     ct_delta = crosstab_block(df, "erode_delta", "deltaloss", args)
     conc = concentration_block(df, args)
     coup = coupling_block(df, args)

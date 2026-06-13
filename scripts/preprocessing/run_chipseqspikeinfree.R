@@ -121,7 +121,7 @@ run_one_mark <- function(mark, ss, opt) {
 
   # metaFile: ID must EXACTLY match the bamFiles strings passed below.
   meta <- data.frame(
-    ID       = bams,
+    ID       = basename(bams),
     ANTIBODY = mark,
     GROUP    = paste(trimws(sm$Condition), trimws(sm$Treatment), sep = "_"),
     stringsAsFactors = FALSE
