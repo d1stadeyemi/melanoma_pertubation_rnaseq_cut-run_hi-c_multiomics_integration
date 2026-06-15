@@ -369,8 +369,10 @@ main <- function() {
     write.csv(df, file.path(opt$outdir, sprintf("enrich_%s_compare.csv", db)), row.names = FALSE)
     all_tables[[db]] <- cbind(Database = db, df)
     n_terms <- tapply(df$ID, df$Cluster, function(z) length(unique(z)))
-    for (nm in names(n_terms))
-      say(sprintf("   %-28s %d enriched terms (FDR<%.2g)", nm, n_terms[[nm]], opt$qvalue))
+    for (nm in names(n_terms)) {
+      cnt <- n_terms[[nm]]; if (is.na(cnt)) cnt <- 0L
+      say(sprintf("   %-28s %d enriched terms (FDR<%.2g)", nm, cnt, opt$qvalue))
+    }
 
     compare_dotplot(cc, db, opt, opt$outdir)
     emap_fig(cc, sprintf("enrich_%s_emap", db), opt, opt$outdir)

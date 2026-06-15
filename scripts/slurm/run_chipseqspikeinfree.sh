@@ -21,6 +21,7 @@ conda activate multiomics-r
 Rscript scripts/preprocessing/run_chipseqspikeinfree.R \
     --sheet  data/processed/sample_sheet.csv \
     --mark H3K27me3 \
+    --reference Parental-H3K27me3-R3 \
     --outdir data/processed/spikefree
 
 conda deactivate
