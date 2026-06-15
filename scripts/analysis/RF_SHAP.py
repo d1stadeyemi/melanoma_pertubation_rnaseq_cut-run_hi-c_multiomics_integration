@@ -78,6 +78,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 from itertools import combinations
 from scipy.stats import mannwhitneyu, kruskal
 from statsmodels.stats.multitest import multipletests
@@ -102,6 +103,9 @@ try:
     import scikit_posthocs as sp
 except ImportError:
     sp = None
+
+# deep green = low feature value, deep yellow = high feature value
+GREEN_YELLOW = LinearSegmentedColormap.from_list("green_yellow", ["#0AF16B", "#CEF3DD", "#F1EE09"])
 
 
 # ── Aesthetics ────────────────────────────────────────────────────
@@ -960,13 +964,13 @@ def _draw_shap_panels(ax_bar, ax_bee, sv, X, feat_names, title_extra=""):
                      fontweight="bold", pad=8)
     ax_bar.set_xlim(0, max(mean_shap) * 1.18)
 
-    feat_order = [feat_names[i] for i in order[::-1]]
+    feat_order = [feat_names[i] for i in order]
     X_df  = pd.DataFrame(X,  columns=feat_names)[feat_order]
     sv_df = pd.DataFrame(sv, columns=feat_names)[feat_order]
     plt.sca(ax_bee)
     shap.summary_plot(sv_df.values, X_df.values, feature_names=feat_order,
                       plot_type="dot", show=False, color_bar=True,
-                      sort=False, plot_size=None)
+                      sort=False, plot_size=None, cmap=GREEN_YELLOW)
     ax_bee.set_xlabel("SHAP value (impact on switcher probability)", labelpad=6)
     ax_bee.set_title("Feature Importance (direction)" + title_extra,
                      fontweight="bold", pad=8)

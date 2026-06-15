@@ -25,12 +25,12 @@ conda activate multiomics-ml
 echo "=========================================="
 echo " Epigenetic priming"
 echo "=========================================="
-#python scripts/analysis/RF_SHAP.py \
-#    $CUTRUN $HIC \
-#    --outdir $FIGS/RF_SHAP_both \
-#    --shap_dependence_partners H3K27me3_mean:H3K27Ac_mean H3K9me3_mean:H3K4me1_mean H3K27me3_mean:H3K4me1_mean H3K27me3_mean:H3K9me3_mean \
-#    --comparison both \
-#    --model rf
+python scripts/analysis/RF_SHAP.py \
+    $CUTRUN $HIC \
+    --outdir $FIGS/RF_SHAP_both \
+    --shap_dependence_partners H3K27me3_mean:H3K27Ac_mean H3K9me3_mean:H3K4me1_mean H3K27me3_mean:H3K4me1_mean H3K27me3_mean:H3K9me3_mean \
+    --comparison both \
+    --model rf
 
 # Permutation test for RF and SHAP significance
 #python scripts/analysis/RF_permutation_test.py \
@@ -41,11 +41,11 @@ echo "=========================================="
 #    --n_perm 2000
 
 # Control analyses 
-python scripts/analysis/RF_SHAP_controls.py \
-    $CUTRUN $HIC \
-    --outdir $FIGS/RF_SHAP_both/controls \
-    --comparison both \
-    --model rf 
+# python scripts/analysis/RF_SHAP_controls.py \
+#    $CUTRUN $HIC \
+#    --outdir $FIGS/RF_SHAP_both/controls \
+#    --comparison both \
+#    --model rf 
 
 conda deactivate
 

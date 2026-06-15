@@ -389,7 +389,7 @@ def run_comparison(df, feat_names, comp, args, chrom_series):
 def _plot_grid(summary_df, spec, outdir, model_name, title=None):
     os.makedirs(outdir, exist_ok=True)
     schemes = list(dict.fromkeys(summary_df["cv_scheme"]))  # preserve order
-    colors = {"standard": "#1A5276", "chromosome": "#C0392B"}
+    colors = {"standard": "#0509F3", "chromosome": "#FC0505"}
     nice = {"standard": "Standard 5-fold CV",
             "chromosome": "Chromosome-held-out CV"}
     width = 0.38
@@ -421,7 +421,7 @@ def _plot_grid(summary_df, spec, outdir, model_name, title=None):
     ax.text(len(VARIANTS) - 0.55, 0.5, "  chance", fontsize=9.5,
             color="#555", ha="left", va="center")
     ax.set_xticks(xbase)
-    ax.set_xticklabels(["marks\nonly", "PC1\nonly", "marks\n+PC1",
+    ax.set_xticklabels(["histone\nmarks", "compartment\nidentity", "marks\n+compartment",
                         "scrambled"], fontsize=11)
     ax.set_ylabel("AUROC  (mean \u00b1 SD across folds)", fontsize=12.5)
     ax.set_ylim(0.4, 1.0)
