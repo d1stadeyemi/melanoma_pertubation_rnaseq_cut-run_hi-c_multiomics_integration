@@ -105,7 +105,7 @@ except ImportError:
     sp = None
 
 # deep green = low feature value, deep yellow = high feature value
-GREEN_YELLOW = LinearSegmentedColormap.from_list("green_yellow", ["#0AF16B", "#CEF3DD", "#F1EE09"])
+GREEN_YELLOW = LinearSegmentedColormap.from_list("green_yellow", ["#035E29", "#CEF3DD", "#C5C207"])
 
 
 # ── Aesthetics ────────────────────────────────────────────────────

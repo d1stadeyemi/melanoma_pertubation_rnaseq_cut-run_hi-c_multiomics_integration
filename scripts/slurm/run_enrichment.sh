@@ -21,8 +21,8 @@ conda activate multiomics-r
 Rscript scripts/analysis/pathway_enrichment.R \
     --genelists results/exploratory/reversal/genelists \
     --background results/exploratory/reversal/genelists/background_universe.txt \
-    --databases PRC2,GO_BP --focal migration_specific_reversal \
-    --pvalue 1 --qvalue 1 \
-    --outdir results/exploratory/enrichment_full
+    --databases PRC2 --focal migration_specific_reversal \
+    --max_gs 2000 --pvalue 1 --qvalue 1 \
+    --outdir results/exploratory/enrichment_prc2_big
 
 conda deactivate

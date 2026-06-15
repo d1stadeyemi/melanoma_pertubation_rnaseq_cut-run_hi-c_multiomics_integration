@@ -301,8 +301,7 @@ emap_fig <- function(obj, fn, opt, outdir) {
 
 cnet_fig <- function(r, fn, opt, outdir) {
   tryCatch({
-    p <- enrichplot::cnetplot(r, showCategory = min(opt$top_n, 8),
-                              cex_label_gene = 0.6)
+    p <- enrichplot::cnetplot(r, showCategory = min(opt$top_n, 8))
     save_gg(p, fn, outdir, w = 10, h = 8)
   }, error = function(e) say(sprintf("   [fig] cnet %s skipped: %s", fn, conditionMessage(e))))
 }
