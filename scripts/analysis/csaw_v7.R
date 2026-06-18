@@ -713,7 +713,7 @@ main <- function() {
   bins <- windowCounts(meta$bamReads, bin = TRUE, width = opt$bg_bin, param = param); colnames(bins) <- meta$SampleID
   bin_control <- if (!is.null(igg_bams)) windowCounts(igg_bams, bin = TRUE, width = opt$bg_bin, param = param) else NULL
   green <- if ("greenlist" %in% methods) { g <- regionCounts(meta$bamReads, regions = green_gr, param = param); colnames(g) <- meta$SampleID; g } else NULL
-  y_ref <- asDGEList(bins)                                 # colnames=SampleID, lib.size=library totals (for compute_nf)
+  y_ref <- asDGEList(bins); colnames(y_ref) <- meta$SampleID   # MUST set names: asDGEList drops them, and compute_nf keys factors off colnames(y_ref)
 
   indep_bams <- NULL
   if (!is.null(opt$baseline_group)) {
