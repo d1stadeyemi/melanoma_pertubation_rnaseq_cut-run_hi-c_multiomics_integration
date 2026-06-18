@@ -191,8 +191,8 @@ parse_cli <- function() {
     make_option("--frag_max", type = "integer", default = 700L,
                 help = "Max fragment length (bp); match Bowtie2 -X. [default %default]"),
 
-    make_option("--min_lfc_bg", type = "double", default = log2(3),
-                help = "Min log2 enrichment over background/IgG to KEEP a window. [default log2(3)=1.58]"),
+    make_option("--min_lfc_bg", type = "double", default = log2(2),
+                help = "Min log2 enrichment over background/IgG to KEEP a window. [default log2(2)=1.0]"),
     make_option("--fdr", type = "double", default = 0.05,
                 help = "FDR cutoff for the significant subset. [default %default]"),
     make_option("--lfc", type = "double", default = 1.0,

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=DiffAnalysis
+#SBATCH --job-name=diff_analysis_v7
 #SBATCH -A ACF-UTK0009
 #SBATCH --partition=condo-rmccord
 #SBATCH --qos=condo
@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=03:00:00
-#SBATCH --output=logs/diff_analysis_int_%j.out
-#SBATCH --error=logs/diff_analysis_int_%j.err
+#SBATCH --output=logs/diff_analysis_v7_%j.out
+#SBATCH --error=logs/diff_analysis_v7_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
 #SBATCH --mail-type=ALL
 #SBATCH --chdir=/lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-run_hi-c_multiomics_integration
@@ -18,39 +18,52 @@ source $ANACONDA3_SH
 
 conda activate multiomics-r
 
+#Rscript scripts/preprocessing/prepare_greenlist_hg19.R \
+#    --excel data/processed/greenlist/greenlist_hg38.xlsx \
+#    --outdir data/processed/greenlist \
+#    --out data/processed/greenlist/greenlist_hg19.bed \
+#    --igg ../../Taiwo/20231024_Cut_Run/IgG-R1/aligned/dedup/IgG-R1.bam \
+#    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#    --chain data/processed/greenlist/hg38ToHg19.over.chain.gz
+
 # Run differential analysis per mark/contrast:
-Rscript scripts/analysis/csaw.R \
+Rscript scripts/analysis/csaw_v7.R \
     --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_B10unc \
+    --outdir results/exploratory/diff_analysis/csaw_v7/H3K27me3_B10unc \
     --mark H3K27me3 \
+    --window 1000,2000,5000 \
     --group1 "B10|UNC" --group2 "B10|none" \
+    --norm libsize,background,spikein,sf,greenlist \
     --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
     --peaks sheet \
     --baseline_group "Parental|none" \
-    --spikein sheet
+    --spikein sheet \
+    --greenlist data/processed/greenlist/greenlist_hg19.bed
 # Default: --test contrast
 
 # Run differential analysis per mark/contrast:
-Rscript scripts/analysis/csaw.R \
-    --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_Parunc \
-    --mark H3K27me3 \
-    --group1 "Parental|UNC" --group2 "Parental|none" \
-    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
-    --peaks sheet \
-    --baseline_group "B10|none" \
-    --spikein sheet
+#Rscript scripts/analysis/csaw_v6.R \
+#    --sheet data/processed/sample_sheet.csv \
+#    --outdir results/exploratory/diff_analysis/csaw_v6/H3K27me3_Parunc \
+#    --mark H3K27me3 \
+#    --group1 "Parental|UNC" --group2 "Parental|none" \
+#    --norm libsize,background,spikein,sf \
+#    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
+#    --peaks sheet \
+#    --baseline_group "B10|none" \
+#    --spikein sheet
 # Default: --test contrast
 
 # Run differential analysis per mark/interaction:
-Rscript scripts/analysis/csaw.R \
-    --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw/H3K27me3_interaction \
-    --mark H3K27me3 \
-    --test interaction \
-    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
-    --peaks sheet \
-    --spikein sheet
+#Rscript scripts/analysis/csaw_v6.R \
+#    --sheet data/processed/sample_sheet.csv \
+#    --outdir results/exploratory/diff_analysis/csaw_v6/H3K27me3_interaction \
+#    --mark H3K27me3 \
+#    --test interaction \
+#    --norm libsize,background,spikein,sf \
+#    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
+#    --peaks sheet \
+#    --spikein sheet
 # Default reference levels:
 # --cond_ref Parental --cond_alt B10 --treat_ref none --treat_alt UNC 
 
