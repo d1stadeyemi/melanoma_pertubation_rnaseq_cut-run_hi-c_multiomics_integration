@@ -58,4 +58,7 @@ test.ipynb
 
 # Local backups created by patch scripts
 **/*.bak
-**/*.bak.*
+**/*.bak.*test.sh
+ryder/
+
+test.sh
