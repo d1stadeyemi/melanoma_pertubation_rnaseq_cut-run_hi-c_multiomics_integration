@@ -254,7 +254,7 @@ def spearman_on(m, mask=None):
 # =============================================================================
 def plot_rank_scatter(m, rho_all, outpath):
     try:
-        fig, ax = plt.subplots(figsize=(8, 8), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
         stab = m["is_stable"].values
         sw = m["is_mig_switcher"].values
         ax.scatter(m["pr_parental"][stab], m["pr_b10"][stab], s=8, alpha=0.25,

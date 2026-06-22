@@ -780,10 +780,10 @@ def plot_violin(panels, value_desc, outpath, show_box=True):
             trimmed.append(vt if len(vt) >= 2 else v)
 
         pos = np.arange(1, len(usable) + 1)
-        fig, ax = plt.subplots(figsize=(1.5 * len(usable) + 1.5, 5.5),
+        fig, ax = plt.subplots(figsize=(0.8 * len(usable) + 1.5, 5.5),
                                constrained_layout=True)
         vp = ax.violinplot(trimmed, positions=pos, showmedians=False,
-                           showextrema=False, widths=0.5)
+                           showextrema=False, widths=0.35)
         for body, p in zip(vp["bodies"], usable):
             body.set_facecolor(p["color"]); body.set_edgecolor("black")
             body.set_alpha(0.85); body.set_linewidth(0.6)
@@ -870,7 +870,7 @@ def plot_forest(results, outpath):
         df = df.iloc[order].reset_index(drop=True)
         colors = {"B10": "#1f77b4", "Parental": "#ff7f0e"}
         y = np.arange(len(df))
-        fig, ax = plt.subplots(figsize=(12, 0.75 * len(df) + 1.5),
+        fig, ax = plt.subplots(figsize=(10, 0.55 * len(df) + 1.2),
                                constrained_layout=True)
         for i, r in df.iterrows():
             c = colors.get(r["cell_line"], "k")
