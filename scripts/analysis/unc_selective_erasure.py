@@ -4,7 +4,7 @@
 unc_selective_erasure.py
 ===========================
 
-Q-A  --  Does UNC1999 (EZH2/EZH1 inhibitor) SELECTIVELY erase the H3K27me3 that
+Does UNC1999 (EZH2/EZH1 inhibitor) SELECTIVELY erase the H3K27me3 that
 constricted migration installed?
 
 The claim under test
@@ -553,15 +553,18 @@ def cliffs_delta(x, y):
 
 
 def stratified_matched_test(values, is_target, baseline, n_strata=10,
-                            n_perm=1000, seed=0):
+                            n_perm=1000, seed=0, n_boot=0):
     """Baseline-matched Cliff's delta between target and stable bins, with a
-    within-stratum label-permutation p-value.
+    within-stratum label-permutation p-value and (optionally) a within-stratum
+    bootstrap CI.
 
     * Strata = quantile bins of baseline abundance (target+stable pooled).
     * Pooled delta = pair-count-weighted mean of per-stratum Cliff's deltas
       (so abundance is controlled, not confounded).
     * Null = shuffle target/stable labels WITHIN each stratum (preserves both the
       abundance distribution and per-stratum target counts) -> matched permutation.
+    * CI (n_boot>0) = resample target and stable values WITH replacement within
+      each stratum, recompute the pooled delta -> 2.5/97.5 percentiles.
     Offset cancellation is automatic: delta is a between-set contrast.
     """
     values   = np.asarray(values, float)
@@ -609,9 +612,36 @@ def stratified_matched_test(values, is_target, baseline, n_strata=10,
     perm = perm[np.isfinite(perm)]
     p_two = (np.sum(np.abs(perm) >= abs(obs)) + 1) / (len(perm) + 1) if len(perm) else np.nan
 
+    # bootstrap CI (resample within strata, preserving target/stable membership)
+    ci_low = ci_high = np.nan
+    if n_boot > 0:
+        # precompute per-stratum index pools
+        tgt_idx = [np.where((strata == s) & t)[0] for s in range(n_strata)]
+        stb_idx = [np.where((strata == s) & ~t)[0] for s in range(n_strata)]
+        boots = np.empty(n_boot)
+        for j in range(n_boot):
+            num = den = 0.0
+            for s in range(n_strata):
+                ti, si = tgt_idx[s], stb_idx[s]
+                if len(ti) == 0 or len(si) == 0:
+                    continue
+                xs = v[rng.choice(ti, size=len(ti), replace=True)]
+                ys = v[rng.choice(si, size=len(si), replace=True)]
+                d = cliffs_delta(xs, ys)
+                if not np.isfinite(d):
+                    continue
+                w = len(ti) * len(si)
+                num += d * w; den += w
+            boots[j] = num / den if den > 0 else np.nan
+        boots = boots[np.isfinite(boots)]
+        if len(boots):
+            ci_low, ci_high = np.percentile(boots, [2.5, 97.5])
+
     return {
         "cliffs_delta": obs,
         "perm_p_two_sided": p_two,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
         "n_target": int(t.sum()),
         "n_stable": int((~t).sum()),
         "n_perm_valid": int(len(perm)),
@@ -624,7 +654,7 @@ def stratified_matched_test(values, is_target, baseline, n_strata=10,
 # 6. Run one enrichment contrast (target set vs stable set), abundance-matched
 # =============================================================================
 def run_contrast(master, target_mask, stable_mask, value_col, baseline_col,
-                 n_strata, n_perm, seed):
+                 n_strata, n_perm, seed, n_boot=0):
     # numpy boolean masks -> positional selection (index-safe even after filtering)
     target_mask = np.asarray(target_mask, bool)
     stable_mask = np.asarray(stable_mask, bool)
@@ -634,7 +664,7 @@ def run_contrast(master, target_mask, stable_mask, value_col, baseline_col,
         values=sub[value_col].values,
         is_target=target_mask[sel],
         baseline=sub[baseline_col].values,
-        n_strata=n_strata, n_perm=n_perm, seed=seed,
+        n_strata=n_strata, n_perm=n_perm, seed=seed, n_boot=n_boot,
     )
 
 
@@ -648,54 +678,158 @@ def interpret(delta, p):
     return "depletion DE-enriched at target (opposite)"
 
 
+# ---- shared plotting vocabulary --------------------------------------------
+# Category colours (stable = deep red reference; switchers/reverters in the blue
+# family; gainers green). Direction (A->B vs B->A) is encoded by position+label,
+# not colour, so the colour reads as "what kind of region" at a glance.
+CAT_COLORS = {
+    "stable":   "#b2182b",   # deep red  (reference)
+    "switcher": "#0e12e0",   # deep blue
+    "reverter": "#011b1d",   # mid blue  (blue family, distinct from switchers)
+    "gainer":   "#0be96b",   # green
+}
+
+
+def cliff_band(delta):
+    """Vargha-Delaney / Romano magnitude band for |Cliff's delta|."""
+    a = abs(delta)
+    if not np.isfinite(delta):
+        return "na"
+    if a < 0.147:
+        return "negligible"
+    if a < 0.330:
+        return "small"
+    if a < 0.474:
+        return "medium"
+    return "large"
+
+
+def p_stars(p):
+    """Significance stars from a (permutation) p-value."""
+    if not np.isfinite(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return "ns"
+
+
 # =============================================================================
 # 7. Plots
 # =============================================================================
-def plot_ecdf(master, contrasts, value_col, outpath):
+# Both ECDF and violin take a list of "panels". Each panel is a dict:
+#   {label, values (1-D array), color, ref (bool), n, delta, p}
+# 'ref' marks the stable reference (no stars / no effect-size annotation).
+# delta/p are pulled from the SAME enrichment results table that the stats use,
+# so the figure and the statistics can never disagree.
+# =============================================================================
+def plot_ecdf(panels, value_desc, outpath):
     try:
-        fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
-        stable = master[master["is_stable"]][value_col].dropna().values
-        for name, mask in contrasts:
-            x = np.sort(master[mask][value_col].dropna().values)
+        fig, ax = plt.subplots(figsize=(6.5, 5), constrained_layout=True)
+        for p in panels:
+            x = np.sort(np.asarray(p["values"], float))
+            x = x[np.isfinite(x)]
             if len(x) == 0:
                 continue
-            ax.plot(x, np.linspace(0, 1, len(x)), lw=1.6, label=f"{name} (n={len(x)})")
-        xs = np.sort(stable)
-        ax.plot(xs, np.linspace(0, 1, len(xs)), lw=2.2, color="k",
-                label=f"stable (n={len(xs)})")
+            lw = 2.6 if p.get("ref") else 1.8
+            ax.plot(x, np.linspace(0, 1, len(x)), lw=lw, color=p["color"],
+                    label=f"{p['label']} (n={len(x)})")
         ax.axvline(0, color="grey", ls=":", lw=1)
-        ax.set_xlabel("dUNC  =  log2(UNC / none)   [B10]")
+        ax.set_xlabel(value_desc)
         ax.set_ylabel("ECDF")
         ax.set_title("UNC H3K27me3 effect: reprogrammed sets vs stable\n"
                      "(left shift = more depletion)")
-        ax.legend(fontsize=7, frameon=False)
+        ax.legend(fontsize=7.5, frameon=False, loc="lower right")
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:                       # plotting must never kill analysis
         print(f"[warn] ECDF plot failed: {e}")
 
-def plot_violin(master, contrasts, value_col, outpath):
-    """Violin of dUNC by set (stable reference + each reprogrammed set)."""
+
+def plot_violin(panels, value_desc, outpath, show_box=True):
+    """Q1-style violins: category colours, an inner quartile bar, per-violin
+    effect size (Cliff's delta + magnitude band) and significance stars (vs the
+    stable reference), outliers trimmed for display with real whitespace above
+    and below the data."""
     try:
-        groups, labels = [], []
-        sv = master[master["is_stable"]][value_col].dropna().values
-        groups.append(sv); labels.append(f"stable\n(n={len(sv)})")
-        for name, mask in contrasts:
-            v = master[mask][value_col].dropna().values
-            if len(v) == 0:
-                continue
-            groups.append(v); labels.append(f"{name}\n(n={len(v)})")
-        fig, ax = plt.subplots(figsize=(1.6 * len(groups) + 1, 5),
+        usable = [p for p in panels
+                  if len(np.asarray(p["values"], float)[
+                      np.isfinite(np.asarray(p["values"], float))]) >= 2]
+        if len(usable) < 2:
+            print("[warn] violin: fewer than 2 usable panels, skipping")
+            return
+        clean = [np.asarray(p["values"], float) for p in usable]
+        clean = [v[np.isfinite(v)] for v in clean]
+
+        # robust display range (drop 1%/99% tails) -> the "neat" trimmed look
+        allv = np.concatenate(clean)
+        lo, hi = np.nanpercentile(allv, [1, 99])
+        if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+            lo, hi = float(np.nanmin(allv)), float(np.nanmax(allv))
+        rng = max(hi - lo, 1e-9)
+
+        # trim each panel to the display range for the KDE body (keep full data
+        # for the quartile bar so the summary stays exact)
+        trimmed = []
+        for v in clean:
+            vt = v[(v >= lo) & (v <= hi)]
+            trimmed.append(vt if len(vt) >= 2 else v)
+
+        pos = np.arange(1, len(usable) + 1)
+        fig, ax = plt.subplots(figsize=(1.5 * len(usable) + 1.5, 5.5),
                                constrained_layout=True)
-        parts = ax.violinplot(groups, showmedians=True, showextrema=False)
-        parts["bodies"][0].set_facecolor("0.6")          # stable in grey
-        ax.axhline(0, color="grey", ls=":", lw=1)
-        ax.set_xticks(range(1, len(groups) + 1))
-        ax.set_xticklabels(labels, fontsize=8)
-        ax.set_ylabel("dUNC  =  log2(UNC / none)   [B10]")
-        ax.set_title("UNC H3K27me3 effect by set\n(below 0 = more depletion)")
-        allv = np.concatenate(groups)
-        ax.set_ylim(np.nanpercentile(allv, 0.5), np.nanpercentile(allv, 99.5))
+        vp = ax.violinplot(trimmed, positions=pos, showmedians=False,
+                           showextrema=False, widths=0.8)
+        for body, p in zip(vp["bodies"], usable):
+            body.set_facecolor(p["color"]); body.set_edgecolor("black")
+            body.set_alpha(0.85); body.set_linewidth(0.6)
+
+        # inner quartile "bar": thin 5-95% whisker, thick Q1-Q3 bar, white median
+        if show_box:
+            for x, v in zip(pos, clean):
+                if len(v) < 5:
+                    continue
+                q1, med, q3 = np.percentile(v, [25, 50, 75])
+                wlo, whi = np.percentile(v, [5, 95])
+                ax.plot([x, x], [max(wlo, lo), min(whi, hi)], color="black",
+                        lw=1.0, zorder=3)
+                ax.plot([x, x], [q1, q3], color="black", lw=5.0,
+                        solid_capstyle="butt", zorder=4)
+                ax.scatter([x], [med], color="white", s=16, zorder=5,
+                           edgecolor="black", linewidth=0.6)
+
+        # reference lines: no-change (0) and the stable median
+        ax.axhline(0, color="grey", ls=":", lw=1, zorder=1)
+        ref = next((p for p in usable if p.get("ref")), None)
+        if ref is not None:
+            rv = np.asarray(ref["values"], float); rv = rv[np.isfinite(rv)]
+            if len(rv):
+                ax.axhline(np.median(rv), color=CAT_COLORS["stable"], ls="--",
+                           lw=1, alpha=0.7, zorder=1,
+                           label="stable median")
+
+        # per-violin annotation: stars nearest the body, then delta + band above
+        for x, p in zip(pos, usable):
+            if p.get("ref"):
+                continue
+            d = p.get("delta", np.nan); pv = p.get("p", np.nan)
+            ax.text(x, hi + 0.05 * rng, p_stars(pv), ha="center", va="bottom",
+                    fontsize=11, fontweight="bold")
+            ax.text(x, hi + 0.18 * rng, f"δ={d:+.2f}\n({cliff_band(d)})",
+                    ha="center", va="bottom", fontsize=7.5)
+
+        ax.set_xticks(pos)
+        ax.set_xticklabels([f"{p['label']}\n(n={p.get('n', len(c))})"
+                            for p, c in zip(usable, clean)], fontsize=8)
+        # whitespace: pad below the data and leave headroom for the annotations
+        ax.set_ylim(lo - 0.12 * rng, hi + 0.40 * rng)
+        ax.set_ylabel(value_desc)
+        ax.set_title("UNC H3K27me3 effect by reprogrammed set\n"
+                     "(below 0 = depletion; * = perm p vs stable; "
+                     "δ = Cliff's effect size vs stable)")
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:
@@ -717,6 +851,133 @@ def plot_balance(master, target_mask, baseline_col, name, outpath):
         plt.close(fig)
     except Exception as e:
         print(f"[warn] balance plot failed: {e}")
+
+
+# =============================================================================
+# 7b. Forest plot of effect sizes (the summary figure)
+# =============================================================================
+def plot_forest(results, outpath):
+    """Horizontal Cliff's-delta forest plot with bootstrap-CI whiskers.
+
+    One row per (cell_line, target_set); B10 and Parental colour-coded; vertical
+    line at delta=0; star if perm p<0.05; n_target annotated. This is the
+    effect-size-first summary panel."""
+    try:
+        df = results.copy()
+        # order: B10 sets first (as listed), then Parental
+        order = list(range(len(df)))[::-1]   # top row = first plan entry
+        df = df.iloc[order].reset_index(drop=True)
+        colors = {"B10": "#1f77b4", "Parental": "#ff7f0e"}
+        y = np.arange(len(df))
+        fig, ax = plt.subplots(figsize=(8, 0.55 * len(df) + 1.5),
+                               constrained_layout=True)
+        for i, r in df.iterrows():
+            c = colors.get(r["cell_line"], "k")
+            lo = r.get("ci_low", np.nan); hi = r.get("ci_high", np.nan)
+            if np.isfinite(lo) and np.isfinite(hi):
+                ax.plot([lo, hi], [i, i], color=c, lw=2, alpha=0.8, zorder=1)
+            ax.scatter(r["cliffs_delta"], i, color=c, s=45, zorder=2)
+            star = " *" if (np.isfinite(r["perm_p_two_sided"])
+                            and r["perm_p_two_sided"] < 0.05) else ""
+            ax.text(r["cliffs_delta"], i + 0.18,
+                    f"δ={r['cliffs_delta']:+.3f}{star}  (n={r['n_target']})",
+                    fontsize=7, ha="center", va="bottom", color=c)
+        ax.axvline(0, color="grey", ls=":", lw=1)
+        ax.set_yticks(y)
+        ax.set_yticklabels([f"{r['cell_line']}: {r['target_set']}"
+                            for _, r in df.iterrows()], fontsize=8)
+        ax.set_xlabel("Cliff's δ   (negative = H3K27me3 depletion enriched at target)")
+        ax.set_title("UNC selective-erasure effect sizes\n"
+                     "(point = δ, bar = bootstrap 95% CI, * = perm p<0.05)")
+        from matplotlib.lines import Line2D
+        handles = [Line2D([0], [0], marker="o", color="w", label=k,
+                          markerfacecolor=v, markersize=8) for k, v in colors.items()]
+        ax.legend(handles=handles, fontsize=8, frameon=False, loc="lower right")
+        fig.savefig(outpath, dpi=150)
+        plt.close(fig)
+    except Exception as e:
+        print(f"[warn] forest plot failed: {e}")
+
+
+# =============================================================================
+# 7c. Gene mapping: target-set bins -> gene lists + occupied-bin background
+# =============================================================================
+def map_genes(master, gene_table_path, outdir, genes_per_bin="one"):
+    """Map an hg19 gene->bin table onto the target-set flags and emit, into
+    <outdir>/genelists/, one gene-symbol-per-line file per set plus a proper
+    background_universe.txt (genes in EVERY bin that entered the test).
+
+    The gene table must have columns: gene_name, coordinate  (250 kb bin id that
+    matches the compartment 'coordinate'). TSS/bin_start/bin_end are used only
+    for the one-gene-per-bin representative choice.
+
+    genes_per_bin:
+      'one' (default, recommended for ORA) -> collapse to ONE representative gene
+            per bin (TSS closest to bin centre), so clustered genes (e.g. olfactory
+            / HOX arrays falling in a single 250 kb bin) cannot inflate pathway
+            counts. The SAME collapse is applied before deriving lists AND the
+            background, so every list stays a strict subset of the background.
+      'all' -> keep every gene (more power, but bin non-independence inflates ORA;
+            only defensible with the bin-matched background, which we provide).
+    """
+    gt = pd.read_csv(gene_table_path, sep="\t")
+    need = {"gene_name", "coordinate"}
+    if not need.issubset(gt.columns):
+        sys.exit(f"[ERROR] gene table needs columns {need}; has {list(gt.columns)}")
+
+    # restrict to bins that were actually tested (the occupancy-filtered master)
+    tested = set(master["coordinate"])
+    gt = gt[gt["coordinate"].isin(tested)].copy()
+    if not len(gt):
+        sys.exit("[ERROR] no genes fall in the tested bins (coordinate mismatch?)")
+
+    # optional one-gene-per-bin collapse (TSS closest to bin centre)
+    if genes_per_bin == "one" and {"TSS", "bin_start", "bin_end"}.issubset(gt.columns):
+        centre = (gt["bin_start"].astype(float) + gt["bin_end"].astype(float)) / 2.0
+        gt["_dist"] = (gt["TSS"].astype(float) - centre).abs()
+        gt = (gt.sort_values("_dist")
+                .drop_duplicates("coordinate", keep="first")
+                .drop(columns="_dist"))
+    elif genes_per_bin == "one":
+        gt = gt.drop_duplicates("coordinate", keep="first")
+
+    gldir = os.path.join(outdir, "genelists")
+    os.makedirs(gldir, exist_ok=True)
+
+    def genes_in(mask):
+        coords = set(master.loc[mask, "coordinate"])
+        return sorted(set(gt.loc[gt["coordinate"].isin(coords), "gene_name"]))
+
+    sets = {
+        "migration_switchers": master["is_mig_switcher"].values,
+        "switchers_A_to_B":    (master["mig_dir"] == "A_to_B").values,
+        "switchers_B_to_A":    (master["mig_dir"] == "B_to_A").values,
+        "UNC_reverters":       master["is_reverter_b10"].values,
+        "UNC_reverters_A_to_B":(master["is_reverter_b10"] & (master["mig_dir"] == "A_to_B")).values,
+        "UNC_reverters_B_to_A":(master["is_reverter_b10"] & (master["mig_dir"] == "B_to_A")).values,
+        "UNC_reverters_strict":master["is_reverter_b10_strict"].values,
+        "H3K27me3_gainers":    master["is_gainer"].values,
+    }
+    background = sorted(set(gt["gene_name"]))
+    with open(os.path.join(gldir, "background_universe.txt"), "w") as fh:
+        fh.write("\n".join(background) + "\n")
+
+    assign_rows = []
+    for name, mask in sets.items():
+        gl = genes_in(mask)
+        with open(os.path.join(gldir, f"{name}.txt"), "w") as fh:
+            fh.write("\n".join(gl) + "\n")
+        assign_rows.append((name, int(mask.sum()), len(gl)))
+
+    # provenance table (pathway script ignores files matching 'gene_assignment')
+    gt[["gene_name", "coordinate"]].to_csv(
+        os.path.join(gldir, "gene_assignment.tsv"), sep="\t", index=False)
+
+    print(f"[info] gene mapping ({genes_per_bin}/bin): "
+          f"{len(background)} background genes, lists -> {gldir}")
+    for name, nb, ng in assign_rows:
+        print(f"    {name:22s} {nb:>5} bins -> {ng:>5} genes")
+    return gldir
 
 
 # =============================================================================
@@ -850,15 +1111,19 @@ def main(args):
     bta  = (master["mig_dir"] == "B_to_A").values
     atb  = (master["mig_dir"] == "A_to_B").values
     rev  = master[reverter_col].values
+    rev_atb = rev & atb     # reverters whose MIGRATION direction was A->B
+    rev_bta = rev & bta     # reverters whose MIGRATION direction was B->A
     gain = master["is_gainer"].values
     stab = master["is_stable"].values
 
     plan = [
-        ("B10", "migration_switchers", sw,   "dUNC_b10", "baseline_b10"),
-        ("B10", "switchers_B_to_A",    bta,  "dUNC_b10", "baseline_b10"),
-        ("B10", "switchers_A_to_B",    atb,  "dUNC_b10", "baseline_b10"),
-        ("B10", "UNC_reverters",       rev,  "dUNC_b10", "baseline_b10"),
-        ("B10", "H3K27me3_gainers",    gain, "dUNC_b10", "baseline_b10"),
+        ("B10", "migration_switchers", sw,      "dUNC_b10", "baseline_b10"),
+        ("B10", "switchers_A_to_B",    atb,     "dUNC_b10", "baseline_b10"),
+        ("B10", "switchers_B_to_A",    bta,     "dUNC_b10", "baseline_b10"),
+        ("B10", "UNC_reverters",       rev,     "dUNC_b10", "baseline_b10"),
+        ("B10", "reverters_A_to_B",    rev_atb, "dUNC_b10", "baseline_b10"),
+        ("B10", "reverters_B_to_A",    rev_bta, "dUNC_b10", "baseline_b10"),
+        ("B10", "H3K27me3_gainers",    gain,    "dUNC_b10", "baseline_b10"),
         # Parental control arm (reprogramming is a B10 property; effect should be
         # B10-specific or stronger).  Reverter set is B10-only, so omitted here.
         ("Parental", "migration_switchers", sw,   "dUNC_parental", "baseline_parental"),
@@ -868,7 +1133,8 @@ def main(args):
     rows = []
     for i, (cell, name, tmask, vcol, bcol) in enumerate(plan):
         res = run_contrast(master, tmask, stab,
-                           vcol, bcol, args.n_strata, args.n_perm, seed=args.seed + i)
+                           vcol, bcol, args.n_strata, args.n_perm,
+                           seed=args.seed + i, n_boot=args.n_boot)
         res.update(cell_line=cell, target_set=name, value_col=vcol)
         res["interpretation"] = interpret(res["cliffs_delta"], res["perm_p_two_sided"])
         rows.append(res)
@@ -878,8 +1144,8 @@ def main(args):
 
     results = pd.DataFrame(rows)[
         ["cell_line", "target_set", "value_col", "n_target", "n_stable",
-         "cliffs_delta", "perm_p_two_sided", "median_target", "median_stable",
-         "n_perm_valid", "interpretation"]
+         "cliffs_delta", "ci_low", "ci_high", "perm_p_two_sided",
+         "median_target", "median_stable", "n_perm_valid", "interpretation"]
     ]
     results_path = os.path.join(args.outdir, "enrichment_results.tsv")
     results.to_csv(results_path, sep="\t", index=False)
@@ -911,13 +1177,46 @@ def main(args):
               f"delta={r['cliffs_delta']:+.3f}  p={r['perm_p_two_sided']}")
 
     # ---- plots ----
-    b10_contrasts = [("switchers", sw), ("reverters", rev), ("gainers", gain)]
-    plot_ecdf(master, b10_contrasts,
-              "dUNC_b10", os.path.join(args.outdir, "ecdf_dUNC_b10.png"))
-    plot_violin(master, b10_contrasts,
-                "dUNC_b10", os.path.join(args.outdir, "violin_dUNC_b10.png"))
+    # one source of truth: pull each set's delta/p from the results table so the
+    # violin annotations and the statistics can never disagree.
+    lookup = {(r["cell_line"], r["target_set"]): r for _, r in results.iterrows()}
+    value_desc = "dUNC  =  log2(UNC / none)   [B10]"
+
+    def _panel(label, mask, cat, set_name, ref=False):
+        mask = np.asarray(mask, bool)
+        n = int(mask.sum())
+        if not ref and n < args.min_plot_n:
+            print(f"[warn] plot: skipping '{label}' (n={n} < --min-plot-n "
+                  f"{args.min_plot_n})")
+            return None
+        row = lookup.get(("B10", set_name)) if set_name else None
+        return {"label": label, "color": CAT_COLORS[cat], "ref": ref, "n": n,
+                "values": master.loc[mask, "dUNC_b10"].dropna().values,
+                "delta": (row["cliffs_delta"] if row is not None else np.nan),
+                "p": (row["perm_p_two_sided"] if row is not None else np.nan)}
+
+    panels = [p for p in [
+        _panel("stable",     stab,    "stable",   None, ref=True),
+        _panel("A→B switch", atb,     "switcher", "switchers_A_to_B"),
+        _panel("B→A switch", bta,     "switcher", "switchers_B_to_A"),
+        _panel("A→B revert", rev_atb, "reverter", "reverters_A_to_B"),
+        _panel("B→A revert", rev_bta, "reverter", "reverters_B_to_A"),
+    ] if p is not None]
+    if args.plot_gainers:                     # circular by construction; off by default
+        g = _panel("gainer", gain, "gainer", "H3K27me3_gainers")
+        if g is not None:
+            panels.append(g)
+
+    plot_ecdf(panels, value_desc, os.path.join(args.outdir, "ecdf_dUNC_b10.png"))
+    plot_violin(panels, value_desc, os.path.join(args.outdir, "violin_dUNC_b10.png"))
     plot_balance(master, sw, "baseline_b10", "switchers",
                  os.path.join(args.outdir, "balance_switchers.png"))
+    plot_forest(results, os.path.join(args.outdir, "forest_effect_sizes.png"))
+
+    # ---- gene mapping (optional) ----
+    if args.gene_table:
+        map_genes(master, args.gene_table, args.outdir,
+                  genes_per_bin=args.genes_per_bin)
 
     write_manifest(args.outdir, args, samples, len(master), results_path, norm)
     print(f"[done] results -> {results_path}")
@@ -1064,11 +1363,36 @@ def build_parser():
     p.add_argument("--include-chrx", action="store_true",
                    help="include chrX (default: autosomes only)")
 
+    # gene mapping (optional)
+    p.add_argument("--gene-table", default=None,
+                   help="hg19 gene->bin TSV (cols: gene_name, coordinate[, TSS, "
+                        "bin_start, bin_end]). If given, writes per-set gene lists + "
+                        "background_universe.txt under <outdir>/genelists/ for the "
+                        "pathway-enrichment script.")
+    p.add_argument("--genes-per-bin", choices=["one", "all"], default="one",
+                   help="'one' (recommended): one representative gene per bin (TSS "
+                        "nearest bin centre) so clustered genes don't inflate ORA; "
+                        "'all': keep every gene (needs the matched background).")
+
+    # plotting
+    p.add_argument("--plot-gainers", action="store_true",
+                   help="include the H3K27me3-gainer set in the ECDF/violin. OFF by "
+                        "default: gainers are defined from the same H3K27me3 counts "
+                        "that enter dUNC, so their depletion signal is partly circular "
+                        "and distracting in the figure (the stats still report them).")
+    p.add_argument("--min-plot-n", type=int, default=15,
+                   help="minimum bins for a set to appear as its own violin/ECDF curve "
+                        "(small direction-split sets below this are skipped in the plot, "
+                        "not in the stats)")
+
     # statistics
     p.add_argument("--n-strata", type=int, default=10,
                    help="baseline-abundance quantile strata for matching")
     p.add_argument("--n-perm", type=int, default=1000,
                    help="label permutations for the matched p-value")
+    p.add_argument("--n-boot", type=int, default=1000,
+                   help="bootstrap resamples for the Cliff's-delta CI (forest plot); "
+                        "0 disables")
     p.add_argument("--seed", type=int, default=0)
     return p
 
