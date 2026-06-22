@@ -742,7 +742,7 @@ def plot_ecdf(panels, value_desc, outpath):
         ax.set_ylabel("ECDF")
         ax.set_title("UNC H3K27me3 effect: reprogrammed sets vs stable\n"
                      "(left shift = more depletion)")
-        ax.legend(fontsize=7.5, frameon=False, loc="lower right")
+        ax.legend(fontsize=12, frameon=False, loc="lower right")
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:                       # plotting must never kill analysis
@@ -779,10 +779,10 @@ def plot_violin(panels, value_desc, outpath, show_box=True):
             trimmed.append(vt if len(vt) >= 2 else v)
 
         pos = np.arange(1, len(usable) + 1)
-        fig, ax = plt.subplots(figsize=(1.5 * len(usable) + 1.5, 5.5),
+        fig, ax = plt.subplots(figsize=(0.75 * len(usable) + 1.5, 5.5),
                                constrained_layout=True)
         vp = ax.violinplot(trimmed, positions=pos, showmedians=False,
-                           showextrema=False, widths=0.8)
+                           showextrema=False, widths=0.5)
         for body, p in zip(vp["bodies"], usable):
             body.set_facecolor(p["color"]); body.set_edgecolor("black")
             body.set_alpha(0.85); body.set_linewidth(0.6)
@@ -798,7 +798,7 @@ def plot_violin(panels, value_desc, outpath, show_box=True):
                         lw=1.0, zorder=3)
                 ax.plot([x, x], [q1, q3], color="black", lw=5.0,
                         solid_capstyle="butt", zorder=4)
-                ax.scatter([x], [med], color="white", s=16, zorder=5,
+                ax.scatter([x], [med], color="white", s=20, zorder=5,
                            edgecolor="black", linewidth=0.6)
 
         # reference lines: no-change (0) and the stable median
@@ -817,13 +817,13 @@ def plot_violin(panels, value_desc, outpath, show_box=True):
                 continue
             d = p.get("delta", np.nan); pv = p.get("p", np.nan)
             ax.text(x, hi + 0.05 * rng, p_stars(pv), ha="center", va="bottom",
-                    fontsize=11, fontweight="bold")
+                    fontsize=12, fontweight="bold")
             ax.text(x, hi + 0.18 * rng, f"δ={d:+.2f}\n({cliff_band(d)})",
-                    ha="center", va="bottom", fontsize=7.5)
+                    ha="center", va="bottom", fontsize=12)
 
         ax.set_xticks(pos)
         ax.set_xticklabels([f"{p['label']}\n(n={p.get('n', len(c))})"
-                            for p, c in zip(usable, clean)], fontsize=8)
+                            for p, c in zip(usable, clean)], fontsize=12)
         # whitespace: pad below the data and leave headroom for the annotations
         ax.set_ylim(lo - 0.12 * rng, hi + 0.40 * rng)
         ax.set_ylabel(value_desc)
@@ -846,7 +846,7 @@ def plot_balance(master, target_mask, baseline_col, name, outpath):
         ax.set_xlabel("baseline abundance  log2(none signal)")
         ax.set_ylabel("density")
         ax.set_title(f"Baseline-abundance balance: {name} vs stable")
-        ax.legend(fontsize=8, frameon=False)
+        ax.legend(fontsize=12, frameon=False)
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:
@@ -881,18 +881,18 @@ def plot_forest(results, outpath):
                             and r["perm_p_two_sided"] < 0.05) else ""
             ax.text(r["cliffs_delta"], i + 0.18,
                     f"δ={r['cliffs_delta']:+.3f}{star}  (n={r['n_target']})",
-                    fontsize=7, ha="center", va="bottom", color=c)
+                    fontsize=12, ha="center", va="bottom", color=c)
         ax.axvline(0, color="grey", ls=":", lw=1)
         ax.set_yticks(y)
         ax.set_yticklabels([f"{r['cell_line']}: {r['target_set']}"
-                            for _, r in df.iterrows()], fontsize=8)
+                            for _, r in df.iterrows()], fontsize=12)
         ax.set_xlabel("Cliff's δ   (negative = H3K27me3 depletion enriched at target)")
         ax.set_title("UNC selective-erasure effect sizes\n"
                      "(point = δ, bar = bootstrap 95% CI, * = perm p<0.05)")
         from matplotlib.lines import Line2D
         handles = [Line2D([0], [0], marker="o", color="w", label=k,
                           markerfacecolor=v, markersize=8) for k, v in colors.items()]
-        ax.legend(handles=handles, fontsize=8, frameon=False, loc="lower right")
+        ax.legend(handles=handles, fontsize=12, frameon=False, loc="lower right")
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:
@@ -953,8 +953,8 @@ def map_genes(master, gene_table_path, outdir, genes_per_bin="one"):
         "switchers_A_to_B":    (master["mig_dir"] == "A_to_B").values,
         "switchers_B_to_A":    (master["mig_dir"] == "B_to_A").values,
         "UNC_reverters":       master["is_reverter_b10"].values,
-        "UNC_reverters_A_to_B":(master["is_reverter_b10"] & (master["mig_dir"] == "A_to_B")).values,
-        "UNC_reverters_B_to_A":(master["is_reverter_b10"] & (master["mig_dir"] == "B_to_A")).values,
+        "UNC_reverters_A_to_B_to_A":(master["is_reverter_b10"] & (master["unc_dir_b10"] == "A_to_B")).values,
+        "UNC_reverters_B_to_A_to_B":(master["is_reverter_b10"] & (master["unc_dir_b10"] == "B_to_A")).values,
         "UNC_reverters_strict":master["is_reverter_b10_strict"].values,
         "H3K27me3_gainers":    master["is_gainer"].values,
     }
@@ -1111,8 +1111,8 @@ def main(args):
     bta  = (master["mig_dir"] == "B_to_A").values
     atb  = (master["mig_dir"] == "A_to_B").values
     rev  = master[reverter_col].values
-    rev_atb = rev & atb     # reverters whose MIGRATION direction was A->B
-    rev_bta = rev & bta     # reverters whose MIGRATION direction was B->A
+    rev_atb = rev & (master["unc_dir_b10"] == "A_to_B").values   # UNC moves A->B (these migrated B->A)
+    rev_bta = rev & (master["unc_dir_b10"] == "B_to_A").values   # UNC moves B->A (these migrated A->B; H3K27me3-gaining loci)
     gain = master["is_gainer"].values
     stab = master["is_stable"].values
 

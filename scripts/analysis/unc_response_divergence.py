@@ -286,7 +286,7 @@ def plot_divergence_hist(m, outpath):
                       "(<0: B10 more depleted ; >0: parental more depleted)")
         ax.set_ylabel("density")
         ax.set_title("Response-divergence by set")
-        ax.legend(fontsize=8, frameon=False)
+        ax.legend(fontsize=12, frameon=False)
         fig.savefig(outpath, dpi=150); plt.close(fig)
     except Exception as e:
         print(f"[warn] divergence hist failed: {e}")

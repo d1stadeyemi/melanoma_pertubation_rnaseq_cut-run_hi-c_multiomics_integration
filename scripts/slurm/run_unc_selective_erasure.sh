@@ -41,6 +41,10 @@ python scripts/analysis/unc_response_divergence.py \
     --gene-table data/processed/GeneListTSShg19_cleaned.txt \
     --outdir  results/exploratory/unc_response_divergence
 
+python scripts/analysis/unc_domain_confinement.py \
+    --master results/exploratory/unc_selective_erasure/master_bins_H3K27me3_250kb.tsv \
+    --outdir results/exploratory/unc_domain_confinement
+
 conda deactivate
 conda activate multiomics-r
 
