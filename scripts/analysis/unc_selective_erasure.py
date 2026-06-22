@@ -738,8 +738,9 @@ def plot_ecdf(panels, value_desc, outpath):
             ax.plot(x, np.linspace(0, 1, len(x)), lw=lw, color=p["color"],
                     label=f"{p['label']} (n={len(x)})")
         ax.axvline(0, color="grey", ls=":", lw=1)
-        ax.set_xlabel(value_desc)
-        ax.set_ylabel("ECDF")
+        ax.set_xlabel(value_desc, fontsize=12)
+        ax.set_ylabel("ECDF", fontsize=12)
+        ax.tick_params(axis='both', labelsize=12)
         ax.set_title("UNC H3K27me3 effect: reprogrammed sets vs stable\n"
                      "(left shift = more depletion)")
         ax.legend(fontsize=12, frameon=False, loc="lower right")
@@ -779,7 +780,7 @@ def plot_violin(panels, value_desc, outpath, show_box=True):
             trimmed.append(vt if len(vt) >= 2 else v)
 
         pos = np.arange(1, len(usable) + 1)
-        fig, ax = plt.subplots(figsize=(0.75 * len(usable) + 1.5, 5.5),
+        fig, ax = plt.subplots(figsize=(1.5 * len(usable) + 1.5, 5.5),
                                constrained_layout=True)
         vp = ax.violinplot(trimmed, positions=pos, showmedians=False,
                            showextrema=False, widths=0.5)
@@ -869,7 +870,7 @@ def plot_forest(results, outpath):
         df = df.iloc[order].reset_index(drop=True)
         colors = {"B10": "#1f77b4", "Parental": "#ff7f0e"}
         y = np.arange(len(df))
-        fig, ax = plt.subplots(figsize=(8, 0.55 * len(df) + 1.5),
+        fig, ax = plt.subplots(figsize=(12, 0.75 * len(df) + 1.5),
                                constrained_layout=True)
         for i, r in df.iterrows():
             c = colors.get(r["cell_line"], "k")
@@ -886,7 +887,8 @@ def plot_forest(results, outpath):
         ax.set_yticks(y)
         ax.set_yticklabels([f"{r['cell_line']}: {r['target_set']}"
                             for _, r in df.iterrows()], fontsize=12)
-        ax.set_xlabel("Cliff's δ   (negative = H3K27me3 depletion enriched at target)")
+        ax.set_xlabel("Cliff's δ   (negative = H3K27me3 depletion enriched at target)", fontsize=12)
+        ax.tick_params(axis='x', labelsize=12)
         ax.set_title("UNC selective-erasure effect sizes\n"
                      "(point = δ, bar = bootstrap 95% CI, * = perm p<0.05)")
         from matplotlib.lines import Line2D
@@ -953,8 +955,8 @@ def map_genes(master, gene_table_path, outdir, genes_per_bin="one"):
         "switchers_A_to_B":    (master["mig_dir"] == "A_to_B").values,
         "switchers_B_to_A":    (master["mig_dir"] == "B_to_A").values,
         "UNC_reverters":       master["is_reverter_b10"].values,
-        "UNC_reverters_A_to_B_to_A":(master["is_reverter_b10"] & (master["unc_dir_b10"] == "A_to_B")).values,
-        "UNC_reverters_B_to_A_to_B":(master["is_reverter_b10"] & (master["unc_dir_b10"] == "B_to_A")).values,
+        "UNC_reverters_A_to_B":(master["is_reverter_b10"] & (master["unc_dir_b10"] == "A_to_B")).values,
+        "UNC_reverters_B_to_A":(master["is_reverter_b10"] & (master["unc_dir_b10"] == "B_to_A")).values,
         "UNC_reverters_strict":master["is_reverter_b10_strict"].values,
         "H3K27me3_gainers":    master["is_gainer"].values,
     }

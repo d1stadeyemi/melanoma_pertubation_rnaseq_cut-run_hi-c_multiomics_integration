@@ -254,7 +254,7 @@ def spearman_on(m, mask=None):
 # =============================================================================
 def plot_rank_scatter(m, rho_all, outpath):
     try:
-        fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(8, 8), constrained_layout=True)
         stab = m["is_stable"].values
         sw = m["is_mig_switcher"].values
         ax.scatter(m["pr_parental"][stab], m["pr_b10"][stab], s=8, alpha=0.25,
@@ -265,10 +265,12 @@ def plot_rank_scatter(m, rho_all, outpath):
         ax.scatter(m["pr_parental"][dv], m["pr_b10"][dv], s=14, alpha=0.8,
                    color="#d62728", label=f"divergent switchers (n={int(dv.sum())})")
         ax.plot([0, 1], [0, 1], color="k", ls=":", lw=1)
-        ax.set_xlabel("pctrank  dUNC  Parental   (left = more depleted)")
-        ax.set_ylabel("pctrank  dUNC  B10        (down = more depleted)")
-        ax.set_title(f"UNC response: B10 vs Parental\nSpearman rho = {rho_all:.3f}")
-        ax.legend(fontsize=12, frameon=False, loc="upper left")
+        ax.set_xlabel("pctrank  dUNC  Parental   (left = more depleted)", fontsize=12)
+        ax.set_ylabel("pctrank  dUNC  B10        (down = more depleted)", fontsize=12)
+        ax.tick_params(axis="both", which="major", labelsize=12)
+        ax.set_title(f"UNC response: B10 vs Parental\nSpearman rho = {rho_all:.3f}", fontsize=12)
+        ax.legend(fontsize=12, frameon=False, loc="upper left", 
+                  prop={"weight": "bold"}, markerscale=2.0)
         fig.savefig(outpath, dpi=150); plt.close(fig)
     except Exception as e:
         print(f"[warn] rank scatter failed: {e}")
@@ -283,9 +285,9 @@ def plot_divergence_hist(m, outpath):
                 density=True, alpha=0.5, label="switchers", color="#1f77b4")
         ax.axvline(0, color="k", ls=":", lw=1)
         ax.set_xlabel("signed divergence  =  pctrank(B10) - pctrank(Parental)\n"
-                      "(<0: B10 more depleted ; >0: parental more depleted)")
-        ax.set_ylabel("density")
-        ax.set_title("Response-divergence by set")
+                      "(<0: B10 more depleted ; >0: parental more depleted)", fontsize=12)
+        ax.set_ylabel("density", fontsize=12)
+        ax.set_title("Response-divergence by set", fontsize=12)
         ax.legend(fontsize=12, frameon=False)
         fig.savefig(outpath, dpi=150); plt.close(fig)
     except Exception as e:
