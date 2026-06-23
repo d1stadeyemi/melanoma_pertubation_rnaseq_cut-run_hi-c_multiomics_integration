@@ -43,21 +43,22 @@ python scripts/analysis/unc_response_divergence.py \
 
 python scripts/analysis/unc_domain_confinement.py \
     --master results/exploratory/unc_selective_erasure/master_bins_H3K27me3_250kb.tsv \
+    --raster-window 20 60 --raster-cellline b10 \
     --outdir results/exploratory/unc_domain_confinement
 
 conda deactivate
 conda activate multiomics-r
 
-Rscript scripts/analysis/pathway_enrichment.R \
-    --genelists results/exploratory/unc_selective_erasure/genelists \
-    --background results/exploratory/unc_selective_erasure/genelists/background_universe.txt \
-    --databases GO_BP,Reactome,Hallmark,PRC2 --focal UNC_reverters --max_gs 2000 \
-    --outdir results/exploratory/unc_selective_erasure/enrichment
+#Rscript scripts/analysis/pathway_enrichment.R \
+#    --genelists results/exploratory/unc_selective_erasure/genelists \
+#    --background results/exploratory/unc_selective_erasure/genelists/background_universe.txt \
+#    --databases GO_BP,Reactome,Hallmark,PRC2 --focal UNC_reverters --max_gs 2000 \
+#    --outdir results/exploratory/unc_selective_erasure/enrichment
 
-Rscript scripts/analysis/pathway_enrichment.R \
-    --genelists results/exploratory/unc_response_divergence/genelists \
-    --background results/exploratory/unc_response_divergence/genelists/background_universe.txt \
-    --databases GO_BP,Reactome,Hallmark,PRC2 --focal divergent_switchers --max_gs 2000 \
-    --outdir results/exploratory/unc_response_divergence/enrichment
+#Rscript scripts/analysis/pathway_enrichment.R \
+#    --genelists results/exploratory/unc_response_divergence/genelists \
+#    --background results/exploratory/unc_response_divergence/genelists/background_universe.txt \
+#    --databases GO_BP,Reactome,Hallmark,PRC2 --focal divergent_switchers --max_gs 2000 \
+#    --outdir results/exploratory/unc_response_divergence/enrichment
 
 conda deactivate

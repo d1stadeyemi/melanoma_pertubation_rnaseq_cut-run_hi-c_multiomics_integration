@@ -159,10 +159,10 @@ def _assign_roles(cond, trt):
     """(Condition, Treatment) -> analysis role, case-insensitive and robust."""
     role = []
     for c, t in zip(cond.str.strip().str.lower(), trt.str.strip().str.lower()):
-        cc = ("parental" if c.startswith("parent")
+        cc = ("parental" if c.startswith(("parent", "ctrl", "control"))
               else ("b10" if c in {"b10", "bottom", "bottom10"} else c))
         tt = ("unc" if t.startswith("unc")
-              else ("none" if t in {"none", "dmso", "ctrl", "control"} else t))
+              else ("none" if t in {"none", "dmso"} else t))
         role.append(f"{cc}_{tt}")
     return role
 
@@ -780,10 +780,10 @@ def plot_violin(panels, value_desc, outpath, show_box=True):
             trimmed.append(vt if len(vt) >= 2 else v)
 
         pos = np.arange(1, len(usable) + 1)
-        fig, ax = plt.subplots(figsize=(0.8 * len(usable) + 1.5, 5.5),
+        fig, ax = plt.subplots(figsize=(1.2 * len(usable) + 1.5, 5.5),
                                constrained_layout=True)
         vp = ax.violinplot(trimmed, positions=pos, showmedians=False,
-                           showextrema=False, widths=0.35)
+                           showextrema=False, widths=0.5)
         for body, p in zip(vp["bodies"], usable):
             body.set_facecolor(p["color"]); body.set_edgecolor("black")
             body.set_alpha(0.85); body.set_linewidth(0.6)
@@ -870,7 +870,7 @@ def plot_forest(results, outpath):
         df = df.iloc[order].reset_index(drop=True)
         colors = {"B10": "#1f77b4", "Parental": "#ff7f0e"}
         y = np.arange(len(df))
-        fig, ax = plt.subplots(figsize=(10, 0.55 * len(df) + 1.2),
+        fig, ax = plt.subplots(figsize=(12, 0.55 * len(df) + 1.2),
                                constrained_layout=True)
         for i, r in df.iterrows():
             c = colors.get(r["cell_line"], "k")

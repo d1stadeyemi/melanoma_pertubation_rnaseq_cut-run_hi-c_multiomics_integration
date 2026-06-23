@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-unc_domain_confinement.py
+unc_domain_confinement.py   --   Question C
 ===========================================
 
 Does constricted migration CONFINE H3K27me3 domain architecture -- i.e. does the
 mark coalesce into fewer, tighter, more contiguous domains -- and does UNC1999
 (EZH2/EZH1 inhibition) RELAX that confinement back toward the parental layout?
 
-Motivated by Krug et al. 2026 Nat Genet (https://doi.org/10.1038/s41588-026-02586-y): 
-H3K27me3 confinement / cPRC1 under constriction.
+(Motivated by Krug et al. 2026 Nat Genet: H3K27me3 confinement / cPRC1 under
+constriction.)
 
 The 2x2 it reads
 ----------------
@@ -262,12 +262,30 @@ COND_COLOR = {"parental_none": "#f4a582", "parental_unc": "#b2182b",
               "b10_none": "#92c5de", "b10_unc": "#2166ac"}
 
 
+def _stars(p):
+    if not np.isfinite(p):
+        return ""
+    return "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+
+
+def _sig(eff):
+    """A bootstrap CI that excludes 0 = a 'real' effect (used to gate reversal)."""
+    lo, hi = eff.get("ci_low", np.nan), eff.get("ci_high", np.nan)
+    return np.isfinite(lo) and np.isfinite(hi) and (lo > 0 or hi < 0)
+
+
 def plot_metric_panels(metric_vals, metric_ci, effects, outpath):
-    """One panel per metric: 4 condition bars with bootstrap-CI whiskers, plus a
-    one-line readout of the migration effect and the B10 reversal fraction."""
+    """One panel per metric: 4 condition bars with bootstrap-CI whiskers.
+
+    Significance is shown on the contrasts that matter: a bracket over each
+    DMSO->UNC pair (Parental DMSO vs Parental UNC; B10 DMSO vs B10 UNC) carries
+    the UNC-effect stars -- these are the real signal. The migration effect
+    (B10 vs Parental DMSO) is reported in the x-label, and the B10 reversal
+    fraction is shown ONLY when the migration effect is itself significant
+    (otherwise the ratio is undefined and misleading)."""
     try:
         ms = METRICS
-        fig, axes = plt.subplots(1, len(ms), figsize=(3.0 * len(ms), 4.2),
+        fig, axes = plt.subplots(1, len(ms), figsize=(3.2 * len(ms), 4.6),
                                  constrained_layout=True)
         for ax, m in zip(np.atleast_1d(axes), ms):
             xs = np.arange(len(COND_COLS))
@@ -281,59 +299,180 @@ def plot_metric_panels(metric_vals, metric_ci, effects, outpath):
             ax.set_xticklabels([COND_LABEL[c].replace(" ", "\n") for c in COND_COLS],
                                fontsize=7)
             ax.set_title(m, fontsize=9)
-            arrow = "↑confined" if CONFINE_SIGN[m] > 0 else "↓confined"
-            ax.set_xlabel(arrow, fontsize=7, color="0.4")
-            row = effects.get(("migration", m), {})
-            rev = effects.get(("reversal_b10", m), {})
-            txt = ""
-            if row:
-                txt += f"mig Δ={row['diff']:+.3g}{_stars(row['p'])}"
-            if rev and np.isfinite(rev.get("diff", np.nan)):
-                txt += f"\nrev={rev['diff']:.2f}"
-            if txt:
-                ax.annotate(txt, xy=(0.5, 0.98), xycoords="axes fraction",
-                            ha="center", va="top", fontsize=7)
+
+            # significance brackets over the DMSO->UNC pairs (the UNC effect)
+            tops = [vals[i] + his[i] for i in range(len(COND_COLS))]
+            ymax = max(tops) if tops else 1.0
+            gap = 0.05 * (ymax if ymax > 0 else 1.0)
+
+            def bracket(i, j, eff):
+                y = max(tops[i], tops[j]) + gap
+                ax.plot([i, i, j, j], [y, y + gap, y + gap, y], lw=1, color="black")
+                ax.text((i + j) / 2.0, y + gap, _stars(eff.get("p", np.nan)),
+                        ha="center", va="bottom", fontsize=9)
+                return y + 2.2 * gap
+
+            top_used = ymax
+            # COND_COLS order = [parental_none, parental_unc, b10_none, b10_unc]
+            top_used = max(top_used, bracket(0, 1, effects.get(("unc_parental", m), {})))
+            top_used = max(top_used, bracket(2, 3, effects.get(("unc_b10", m), {})))
+            ax.set_ylim(0, top_used + gap)
+
+            # migration effect -> x-label; reversal only if migration is real
+            arrow = "↑ confined" if CONFINE_SIGN[m] > 0 else "↓ confined"
+            mig = effects.get(("migration", m), {})
+            lab = f"{arrow}\nmig Δ={mig.get('diff', np.nan):+.3g} {_stars(mig.get('p', np.nan))}"
+            if _sig(mig):
+                rev = effects.get(("reversal_b10", m), {})
+                if np.isfinite(rev.get("diff", np.nan)):
+                    lab += f"  rev={rev['diff']:.2f}"
+            ax.set_xlabel(lab, fontsize=7, color="0.35")
+
         fig.suptitle("H3K27me3 domain architecture across the 2×2\n"
-                     "(migration confinement and UNC reversal)", fontsize=11)
+                     "brackets = UNC effect (DMSO→UNC); * p<0.05, ** p<0.01, *** p<0.001, ns = not sig.",
+                     fontsize=10)
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:
         print(f"[warn] metric panel plot failed: {e}")
 
 
-def _stars(p):
-    if not np.isfinite(p):
-        return ""
-    return "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else ""
+def plot_domain_raster(df, chrom, top_q, outpath, window=None, diff_cellline="b10"):
+    """Domain occupancy (top-q bins) along one chromosome for the four conditions,
+    plus a 'UNC Δ' track showing which domain bins are LOST vs GAINED under UNC in
+    one cell line -- the visual of confinement / consolidation.
 
-
-def plot_domain_raster(df, chrom, top_q, outpath):
-    """Domain occupancy (top-q bins) along one chromosome for the four conditions
-    -- the visual of confinement (fewer/longer blocks) and its UNC reversal."""
+    Domain calls are GENOME-WIDE (rank over the whole analysed set), so they match
+    the n_domains / mean_run_len metrics exactly. Rows are ordered Parental DMSO,
+    Parental UNC, B10 DMSO, B10 UNC top-to-bottom. Use `window=(start_mb,end_mb)`
+    to zoom in so individual domains and their lengths are visible."""
     try:
-        g = df[df["chr"] == chrom].sort_values("bed_start")
-        if len(g) < 10:
-            print(f"[warn] raster: chromosome {chrom} has <10 bins, skipping")
+        # genome-wide top-q domain calls (consistent with compute_metrics)
+        d = df.copy()
+        for c in COND_COLS:
+            d[c + "_dom"] = (rankdata(d[c].values) / len(d)) >= (1.0 - top_q)
+        g = d[d["chr"] == chrom].sort_values("bed_start")
+        if window is not None:
+            s_mb, e_mb = window
+            g = g[(g["bed_end"].values / 1e6 > s_mb) & (g["bed_start"].values / 1e6 < e_mb)]
+        if len(g) < 5:
+            print(f"[warn] raster: {chrom}{(' window' if window else '')} has <5 bins, skipping")
             return
-        x0 = g["bed_start"].values / 1e6
-        fig, ax = plt.subplots(figsize=(10, 3.2), constrained_layout=True)
-        for row, c in enumerate(COND_COLS):
-            r = rankdata(g[c].values) / len(g)
-            dom = r >= (1 - top_q)
-            ax.broken_barh(
-                [(x0[i], (g["bed_end"].values[i] - g["bed_start"].values[i]) / 1e6)
-                 for i in np.where(dom)[0]],
-                (row - 0.4, 0.8), facecolors=COND_COLOR[c], edgecolor="none")
-        ax.set_yticks(range(len(COND_COLS)))
-        ax.set_yticklabels([COND_LABEL[c] for c in COND_COLS], fontsize=8)
+
+        starts = g["bed_start"].values / 1e6
+        widths = (g["bed_end"].values - g["bed_start"].values) / 1e6
+        n_main = len(COND_COLS)
+        fig, ax = plt.subplots(figsize=(11, 3.8), constrained_layout=True)
+
+        # four condition rows (row index = COND_COLS order; y inverted below)
+        for i, c in enumerate(COND_COLS):
+            dom = g[c + "_dom"].values
+            ax.broken_barh([(starts[k], widths[k]) for k in np.where(dom)[0]],
+                           (i - 0.4, 0.8), facecolors=COND_COLOR[c], edgecolor="none")
+
+        # fifth row: domain bins LOST (DMSO-only) vs GAINED (UNC-only) under UNC
+        cn, cu = (("b10_none", "b10_unc") if diff_cellline == "b10"
+                  else ("parental_none", "parental_unc"))
+        lost = g[cn + "_dom"].values & ~g[cu + "_dom"].values
+        gained = g[cu + "_dom"].values & ~g[cn + "_dom"].values
+        drow = n_main
+        ax.broken_barh([(starts[k], widths[k]) for k in np.where(lost)[0]],
+                       (drow - 0.4, 0.8), facecolors="#d6604d", edgecolor="none")
+        ax.broken_barh([(starts[k], widths[k]) for k in np.where(gained)[0]],
+                       (drow - 0.4, 0.8), facecolors="#2166ac", edgecolor="none")
+
+        labels = [COND_LABEL[c] for c in COND_COLS] + \
+                 [f"{'B10' if diff_cellline == 'b10' else 'Parental'} UNC Δ"]
+        ax.set_yticks(range(n_main + 1))
+        ax.set_yticklabels(labels, fontsize=8)
+        ax.set_ylim(-0.6, n_main + 0.6)
+        ax.invert_yaxis()                      # Parental DMSO on top
+        ax.axhline(n_main - 0.5, color="0.7", lw=0.8, ls=":")   # separate the Δ track
         ax.set_xlabel(f"{chrom} position (Mb)")
-        ax.set_title(f"H3K27me3 domains (top {top_q:.0%} bins) on {chrom}\n"
-                     "fewer/longer blocks = more confined")
-        ax.set_ylim(-0.6, len(COND_COLS) - 0.4)
+        ttl = f"H3K27me3 domains (top {top_q:.0%} bins) on {chrom}"
+        if window is not None:
+            ttl += f"  [{window[0]:g}-{window[1]:g} Mb]"
+        ax.set_title(ttl + "\nfewer/longer blocks = more confined; "
+                           "Δ track: red = lost under UNC, blue = gained")
+        from matplotlib.patches import Patch
+        ax.legend(handles=[Patch(color="#d6604d", label="lost under UNC"),
+                           Patch(color="#2166ac", label="gained under UNC")],
+                  fontsize=7, frameon=False, loc="upper right", ncol=2)
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:
         print(f"[warn] raster plot failed: {e}")
+
+
+# =============================================================================
+# Domain-set dynamics (Jaccard + lost/gained spatial signature)
+# =============================================================================
+def _runlen_and_adj(dom, retained, starts, ends):
+    """Within one chromosome (sorted): per-bin run length in the `dom` track, and
+    whether each bin is genomically adjacent to a `retained` domain bin."""
+    n = len(dom)
+    adjL = np.r_[False, starts[1:] == ends[:-1]]          # bin i abuts bin i-1
+    new = dom & ~(np.r_[False, dom[:-1]] & adjL)
+    runid = np.where(dom, np.cumsum(new), 0)
+    lengths = np.bincount(runid)
+    runlen = np.where(dom, lengths[runid], 0).astype(float)
+    left_ret = np.r_[False, retained[:-1]] & adjL
+    adjR = np.r_[starts[1:] == ends[:-1], False]          # bin i abuts bin i+1
+    right_ret = np.r_[retained[1:], False] & adjR
+    return runlen, (left_ret | right_ret)
+
+
+def analyze_domain_dynamics(df, top_q):
+    """For each cell line, compare the top-q domain SET between DMSO and UNC.
+
+    Discriminates 'consolidation by attrition' (biologically real differential
+    erasure) from a 'thresholding artifact':
+      * Jaccard(DMSO domains, UNC domains): set stability. A PURE global-scaling
+        artifact preserves rank order -> Jaccard=1 and no metric change; the
+        observed metric change therefore REQUIRES a rank-structure change.
+      * lost bins should sit in SHORT DMSO runs / be singletons (the dispersed
+        inter-domain spread), retained bins in LONG runs (the cores).
+      * gained bins should be ADJACENT to retained cores (they extend/merge
+        domains) rather than seed new isolated ones.
+    """
+    d = df.sort_values(["chr", "bed_start"]).reset_index(drop=True)
+    dom = {c: (rankdata(d[c].values) / len(d)) >= (1.0 - top_q) for c in COND_COLS}
+    base_rank = {}
+    if "baseline_b10" in d:
+        base_rank["b10"] = rankdata(d["baseline_b10"].values) / len(d)
+    if "baseline_parental" in d:
+        base_rank["parental"] = rankdata(d["baseline_parental"].values) / len(d)
+
+    pairs = {"b10": ("b10_none", "b10_unc"),
+             "parental": ("parental_none", "parental_unc")}
+    rows = []
+    for cell, (cn, cu) in pairs.items():
+        dn, du = dom[cn], dom[cu]
+        union = (dn | du).sum()
+        jac = (dn & du).sum() / union if union else np.nan
+        lost = dn & ~du; gained = du & ~dn; retained = dn & du
+
+        runlen = np.zeros(len(d)); adj_ret = np.zeros(len(d), bool)
+        for _, g in d.groupby("chr", sort=False):
+            idx = g.index.values
+            rl, ar = _runlen_and_adj(dn[idx], retained[idx],
+                                     g["bed_start"].values, g["bed_end"].values)
+            runlen[idx] = rl; adj_ret[idx] = ar
+
+        row = {"cell_line": cell, "jaccard": jac,
+               "n_dmso_domains": int(dn.sum()), "n_unc_domains": int(du.sum()),
+               "n_lost": int(lost.sum()), "n_gained": int(gained.sum()),
+               "n_retained": int(retained.sum()),
+               "lost_mean_dmso_runlen": float(runlen[lost].mean()) if lost.any() else np.nan,
+               "retained_mean_dmso_runlen": float(runlen[retained].mean()) if retained.any() else np.nan,
+               "lost_singleton_frac": float((runlen[lost] == 1).mean()) if lost.any() else np.nan,
+               "retained_singleton_frac": float((runlen[retained] == 1).mean()) if retained.any() else np.nan,
+               "gained_adj_to_core_frac": float(adj_ret[gained].mean()) if gained.any() else np.nan}
+        if cell in base_rank:
+            row["lost_mean_baseline_rank"] = float(base_rank[cell][lost].mean()) if lost.any() else np.nan
+            row["retained_mean_baseline_rank"] = float(base_rank[cell][retained].mean()) if retained.any() else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 # =============================================================================
@@ -444,6 +583,27 @@ def main(args):
     mv.index.name = "condition"
     mv.to_csv(os.path.join(args.outdir, "architecture_metrics.tsv"), sep="\t")
 
+    # ---- domain-set dynamics: is UNC consolidation attrition or thresholding? ----
+    if args.jaccard:
+        dyn = analyze_domain_dynamics(df, args.top_q)
+        dyn.to_csv(os.path.join(args.outdir, "domain_set_dynamics.tsv"),
+                   sep="\t", index=False)
+        print("[info] domain-set dynamics (DMSO vs UNC top-q domain set):")
+        for _, r in dyn.iterrows():
+            verdict = ("attrition (lost=dispersed singletons, gained extend cores)"
+                       if (np.isfinite(r["lost_singleton_frac"])
+                           and r["lost_singleton_frac"] > r["retained_singleton_frac"]
+                           and np.isfinite(r["gained_adj_to_core_frac"])
+                           and r["gained_adj_to_core_frac"] > 0.5)
+                       else "spatially unstructured (caution: closer to thresholding)")
+            print(f"    {r['cell_line']:8s} Jaccard={r['jaccard']:.3f}  "
+                  f"lost={int(r['n_lost'])} (singleton {r['lost_singleton_frac']:.2f} "
+                  f"vs retained {r['retained_singleton_frac']:.2f}; "
+                  f"DMSO run-len {r['lost_mean_dmso_runlen']:.2f} vs "
+                  f"{r['retained_mean_dmso_runlen']:.2f})  "
+                  f"gained adj-to-core={r['gained_adj_to_core_frac']:.2f}")
+            print(f"             -> {verdict}")
+
     # ---- console summary of the headline contrasts ----
     print("[info] migration confinement & UNC reversal (perm p):")
     for m in METRICS:
@@ -459,8 +619,11 @@ def main(args):
     chrom = args.raster_chrom
     if chrom in (None, "auto"):
         chrom = df.groupby("chr").size().idxmax()        # densest chromosome
+    window = tuple(args.raster_window) if args.raster_window else None
+    wtag = f"_{window[0]:g}-{window[1]:g}Mb" if window else ""
     plot_domain_raster(df, str(chrom), args.top_q,
-                       os.path.join(args.outdir, f"domain_raster_{chrom}.png"))
+                       os.path.join(args.outdir, f"domain_raster_{chrom}{wtag}.png"),
+                       window=window, diff_cellline=args.raster_cellline)
 
     write_manifest(args.outdir, args, len(df), metric_vals)
     print(f"[done] effects -> {os.path.join(args.outdir, 'architecture_effects.tsv')}")
@@ -557,6 +720,18 @@ def build_parser():
                         "0 = use as-is)")
     p.add_argument("--raster-chrom", default="auto",
                    help="chromosome for the domain raster figure ('auto' = densest)")
+    p.add_argument("--raster-window", type=float, nargs=2, default=None,
+                   metavar=("START_MB", "END_MB"),
+                   help="zoom the raster to a genomic window in Mb (e.g. --raster-window "
+                        "20 40); omit to show the whole chromosome")
+    p.add_argument("--raster-cellline", choices=["b10", "parental"], default="b10",
+                   help="cell line whose UNC lost/gained domain track is drawn under "
+                        "the four condition rows")
+    p.add_argument("--jaccard", action=argparse.BooleanOptionalAction, default=True,
+                   help="report domain-set dynamics (Jaccard overlap of the top-q "
+                        "domain set between DMSO and UNC, plus the lost/gained spatial "
+                        "signature that separates real attrition from a thresholding "
+                        "effect). Use --no-jaccard to skip.")
     p.add_argument("--n-boot", type=int, default=1000)
     p.add_argument("--n-perm", type=int, default=1000)
     p.add_argument("--seed", type=int, default=0)
