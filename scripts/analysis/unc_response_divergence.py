@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-unc_response_divergence.py 
+unc_response_divergence.py   --   Question D
 ============================================
 
 Did constricted migration REPROGRAM the H3K27me3 response to EZH2 inhibition?
@@ -252,26 +252,49 @@ def spearman_on(m, mask=None):
 # =============================================================================
 # Plots
 # =============================================================================
-def plot_rank_scatter(m, rho_all, outpath):
+def plot_rank_scatter(m, rho_all, thr, outpath):
+    """Each dot is a 250 kb bin: x = its UNC-response percentile rank in Parental,
+    y = in B10 (low rank = more depleted). The diagonal = identical response. The
+    two shaded off-diagonal wedges (|rank gap| >= thr) are the 'divergent' region;
+    divergent switchers are coloured by direction (top-left = parental-more-depleted,
+    bottom-right = B10-more-depleted)."""
     try:
-        fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(5.8, 5.8), constrained_layout=True)
+        # shade the two divergence wedges: y >= x+thr (top-left), y <= x-thr (bottom-right)
+        ax.fill([0, 0, 1 - thr], [thr, 1, 1], color="0.88", lw=0, zorder=0)
+        ax.fill([thr, 1, 1], [0, 0, 1 - thr], color="0.88", lw=0, zorder=0)
+
         stab = m["is_stable"].values
         sw = m["is_mig_switcher"].values
-        ax.scatter(m["pr_parental"][stab], m["pr_b10"][stab], s=8, alpha=0.25,
-                   color="0.6", label=f"stable (n={int(stab.sum())})")
-        ax.scatter(m["pr_parental"][sw], m["pr_b10"][sw], s=10, alpha=0.5,
-                   color="#080cee", label=f"switchers (n={int(sw.sum())})")
-        dv = m["is_divergent"].values & sw
-        ax.scatter(m["pr_parental"][dv], m["pr_b10"][dv], s=14, alpha=0.8,
-                   color="#d62728", label=f"divergent switchers (n={int(dv.sum())})")
-        ax.plot([0, 1], [0, 1], color="k", ls=":", lw=1)
-        ax.set_xlabel("pctrank  dUNC  Parental   (left = more depleted)", fontsize=12)
-        ax.set_ylabel("pctrank  dUNC  B10        (down = more depleted)", fontsize=12)
-        ax.tick_params(axis="both", which="major", labelsize=12)
-        ax.set_title(f"UNC response: B10 vs Parental\nSpearman rho = {rho_all:.3f}", fontsize=12)
-        ax.legend(fontsize=12, frameon=False, loc="upper left", 
-                  prop={"weight": "bold"}, markerscale=2.0)
-        fig.savefig(outpath, dpi=150); plt.close(fig)
+        div = m["is_divergent"].values
+        sgn = m["signed_div"].values
+
+        ax.scatter(m["pr_parental"][stab], m["pr_b10"][stab], s=7, alpha=0.20,
+                   color="0.6", zorder=1, label=f"stable (n={int(stab.sum())})")
+        sw_nd = sw & ~div
+        ax.scatter(m["pr_parental"][sw_nd], m["pr_b10"][sw_nd], s=9, alpha=0.45,
+                   color="#3a4ccc", zorder=2, label=f"switchers (n={int(sw.sum())})")
+
+        # divergent switchers, split by direction
+        par_more = sw & div & (sgn > 0)        # B10 kept, Parental lost -> top-left
+        b10_more = sw & div & (sgn < 0)        # Parental kept, B10 lost -> bottom-right
+        ax.scatter(m["pr_parental"][par_more], m["pr_b10"][par_more], s=24, alpha=0.9,
+                   color="#e08214", edgecolor="k", linewidth=0.3, zorder=3,
+                   label=f"divergent: parental-more-depleted (n={int(par_more.sum())})")
+        ax.scatter(m["pr_parental"][b10_more], m["pr_b10"][b10_more], s=24, alpha=0.9,
+                   color="#1b9e77", edgecolor="k", linewidth=0.3, zorder=3,
+                   label=f"divergent: B10-more-depleted (n={int(b10_more.sum())})")
+
+        ax.plot([0, 1], [0, 1], color="k", ls=":", lw=1, zorder=2)
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.set_xlabel("pctrank dUNC Parental   (left = more depleted)", fontsize=11)
+        ax.set_ylabel("pctrank dUNC B10   (down = more depleted)", fontsize=11)
+        ax.set_title(f"UNC response: B10 vs Parental\n"
+                     f"Spearman ρ = {rho_all:.3f}    "
+                     f"(shaded = divergent, |Δrank| ≥ {thr:.2f})", fontsize=11)
+        ax.legend(fontsize=8, frameon=False, loc="upper center",
+                  bbox_to_anchor=(0.5, -0.13), ncol=2)
+        fig.savefig(outpath, dpi=150, bbox_inches="tight"); plt.close(fig)
     except Exception as e:
         print(f"[warn] rank scatter failed: {e}")
 
@@ -285,13 +308,83 @@ def plot_divergence_hist(m, outpath):
                 density=True, alpha=0.5, label="switchers", color="#1f77b4")
         ax.axvline(0, color="k", ls=":", lw=1)
         ax.set_xlabel("signed divergence  =  pctrank(B10) - pctrank(Parental)\n"
-                      "(<0: B10 more depleted ; >0: parental more depleted)", fontsize=12)
-        ax.set_ylabel("density", fontsize=12)
-        ax.set_title("Response-divergence by set", fontsize=12)
-        ax.legend(fontsize=12, frameon=False)
+                      "(<0: B10 more depleted ; >0: parental more depleted)")
+        ax.set_ylabel("density")
+        ax.set_title("Response-divergence by set")
+        ax.legend(fontsize=8, frameon=False)
         fig.savefig(outpath, dpi=150); plt.close(fig)
     except Exception as e:
         print(f"[warn] divergence hist failed: {e}")
+
+
+def plot_concordance(concord, outpath):
+    """Headline figure: Spearman concordance of the two cell lines' UNC response,
+    by locus class. Bars ABOVE the stable dashed line = the cell lines respond
+    MORE alike at reprogrammed loci (i.e. migration did NOT decouple the response).
+    """
+    try:
+        order = ["overall", "stable", "switchers", "reverters"]
+        label = {"overall": "all bins", "stable": "stable",
+                 "switchers": "switchers", "reverters": "reverters"}
+        color = {"overall": "#444444", "stable": "#b0b0b0",
+                 "switchers": "#3a4ccc", "reverters": "#4393c3"}
+        present = [k for k in order
+                   if k in concord and np.isfinite(concord[k].get("rho", np.nan))]
+        rhos = [concord[k]["rho"] for k in present]
+        ns = [concord[k]["n"] for k in present]
+        fig, ax = plt.subplots(figsize=(5.4, 4.4), constrained_layout=True)
+        xs = np.arange(len(present))
+        ax.bar(xs, rhos, color=[color[k] for k in present],
+               edgecolor="black", linewidth=0.6)
+        for x, r, n in zip(xs, rhos, ns):
+            ax.text(x, r + 0.008, f"ρ={r:.3f}\nn={n}", ha="center", va="bottom",
+                    fontsize=8)
+        if "stable" in concord and np.isfinite(concord["stable"].get("rho", np.nan)):
+            ax.axhline(concord["stable"]["rho"], color="0.5", ls="--", lw=1,
+                       label="stable reference")
+            ax.legend(fontsize=8, frameon=False, loc="lower right")
+        ax.set_xticks(xs); ax.set_xticklabels([label[k] for k in present], fontsize=9)
+        ax.set_ylabel("Spearman ρ   (B10 vs Parental UNC response)", fontsize=10)
+        ax.set_ylim(0, max(rhos) * 1.28 if rhos else 1)
+        ax.set_title("Response concordance by locus class\n"
+                     "higher = the two cell lines respond more alike", fontsize=10)
+        fig.savefig(outpath, dpi=150); plt.close(fig)
+    except Exception as e:
+        print(f"[warn] concordance plot failed: {e}")
+
+
+def plot_divergence_forest(results, outpath):
+    """The Q-D test as a forest: per reprogrammed set, Cliff's δ of |rank-divergence|
+    vs baseline-matched stable (point), bootstrap 95% CI (bar), perm-p star, and the
+    categorical Fisher OR. δ>0 = response MORE divergent at reprogrammed loci."""
+    try:
+        df = results.iloc[::-1].reset_index(drop=True)   # first target on top
+        y = np.arange(len(df))
+        fig, ax = plt.subplots(figsize=(7.2, 0.62 * len(df) + 1.6),
+                               constrained_layout=True)
+        for i, r in df.iterrows():
+            lo, hi = r.get("ci_low", np.nan), r.get("ci_high", np.nan)
+            sig = np.isfinite(r["perm_p_two_sided"]) and r["perm_p_two_sided"] < 0.05
+            col = "#d62728" if sig else "#2166ac"
+            if np.isfinite(lo) and np.isfinite(hi):
+                ax.plot([lo, hi], [i, i], color=col, lw=2, alpha=0.8, zorder=1)
+            ax.scatter(r["cliffs_delta"], i, color=col, s=46, zorder=2)
+            star = " *" if sig else ""
+            orv = r.get("fisher_OR_divergent", np.nan)
+            ax.text(r["cliffs_delta"], i + 0.16,
+                    f"δ={r['cliffs_delta']:+.3f}{star}  (OR={orv:.2f})",
+                    ha="center", va="bottom", fontsize=7)
+        ax.axvline(0, color="grey", ls=":", lw=1)
+        ax.set_yticks(y); ax.set_yticklabels(df["target_set"], fontsize=8)
+        ax.set_ylim(-0.6, len(df) - 1 + 0.85)        # headroom for the top label
+        ax.set_xlabel("Cliff's δ of |rank-divergence|   "
+                      "(positive = MORE divergent at reprogrammed loci)", fontsize=9)
+        ax.set_title("Does the UNC response diverge AT the loci migration reprogrammed?\n"
+                     "(point = δ vs matched stable, bar = bootstrap 95% CI, "
+                     "* = perm p<0.05)", fontsize=10)
+        fig.savefig(outpath, dpi=150); plt.close(fig)
+    except Exception as e:
+        print(f"[warn] divergence forest failed: {e}")
 
 
 # =============================================================================
@@ -435,9 +528,12 @@ def main(args):
                   "is_gainer", "is_stable"])
     m[[c for c in keep_cols if c in m.columns]].to_csv(
         os.path.join(args.outdir, "master_divergence.tsv"), sep="\t", index=False)
-    plot_rank_scatter(m, concord["overall"]["rho"],
+    plot_rank_scatter(m, concord["overall"]["rho"], thr,
                       os.path.join(args.outdir, "rank_scatter_b10_vs_parental.png"))
     plot_divergence_hist(m, os.path.join(args.outdir, "signed_divergence_hist.png"))
+    plot_concordance(concord, os.path.join(args.outdir, "concordance_by_class.png"))
+    plot_divergence_forest(results,
+                           os.path.join(args.outdir, "divergence_enrichment_forest.png"))
 
     if args.gene_table:
         map_divergent_genes(m, args.gene_table, args.outdir, args.genes_per_bin)

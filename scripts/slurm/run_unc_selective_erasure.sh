@@ -27,27 +27,41 @@ conda activate multiomics-py
 #    --outdir   results/exploratory/unc_selective_erasure \
 #    --deeptools-blacklist 
 
-python scripts/analysis/unc_selective_erasure.py \
-    --sample-sheet  data/processed/sample_sheet.csv \
-    --size-factors results/exploratory/greenlist_deseq2/H3K27me3_all_size_factors.tsv \
-    --compartments  data/processed/A375-CompartmentsAcrossConditions.txt \
-    --counts-table results/exploratory/unc_selective_erasure/raw_bin_counts.tsv \
-    --norm  greenlist --min-baseline-quantile 0.25 \
-    --gene-table data/processed/GeneListTSShg19_cleaned.txt \
-    --outdir   results/exploratory/unc_selective_erasure  
+#python scripts/analysis/unc_selective_erasure.py --norm cpm \
+#    --sample-sheet data/processed/sample_sheet.csv \
+#    --compartments data/processed/A375-CompartmentsAcrossConditions.txt \
+#    --counts-table results/exploratory/unc_selective_erasure/raw_bin_counts.tsv \
+#    --min-baseline-quantile 0.25 --n-strata 50 \
+#    --outdir results/exploratory/unc_selective_erasure_cpm
 
-python scripts/analysis/unc_response_divergence.py \
-    --master  results/exploratory/unc_selective_erasure/master_bins_H3K27me3_250kb.tsv \
-    --gene-table data/processed/GeneListTSShg19_cleaned.txt \
-    --outdir  results/exploratory/unc_response_divergence
+python scripts/analysis/unc_selective_erasure_v2.py --norm cpm \
+  --sample-sheet data/processed/sample_sheet.csv \
+  --compartments data/processed/A375-CompartmentsAcrossConditions.txt \
+  --counts-table results/exploratory/unc_selective_erasure/raw_bin_counts.tsv \
+  --min-baseline-quantile 0.25 \
+  --outdir results/exploratory/unc_selective_erasure_diagnostic
 
-python scripts/analysis/unc_domain_confinement.py \
-    --master results/exploratory/unc_selective_erasure/master_bins_H3K27me3_250kb.tsv \
-    --raster-window 20 60 --raster-cellline b10 \
-    --outdir results/exploratory/unc_domain_confinement
+#python scripts/analysis/unc_selective_erasure.py \
+#    --sample-sheet  data/processed/sample_sheet.csv \
+#    --size-factors results/exploratory/greenlist_deseq2/H3K27me3_all_size_factors.tsv \
+#    --compartments  data/processed/A375-CompartmentsAcrossConditions.txt \
+#    --counts-table results/exploratory/unc_selective_erasure/raw_bin_counts.tsv \
+#    --norm  greenlist --min-baseline-quantile 0.25 \
+#    --gene-table data/processed/GeneListTSShg19_cleaned.txt \
+#    --outdir   results/exploratory/unc_selective_erasure  
+
+#python scripts/analysis/unc_response_divergence.py \
+#    --master  results/exploratory/unc_selective_erasure/master_bins_H3K27me3_250kb.tsv \
+#    --gene-table data/processed/GeneListTSShg19_cleaned.txt \
+#    --outdir  results/exploratory/unc_response_divergence
+
+#python scripts/analysis/unc_domain_confinement.py \
+#    --master results/exploratory/unc_selective_erasure/master_bins_H3K27me3_250kb.tsv \
+#    --raster-window 20 60 --raster-cellline b10 \
+#    --outdir results/exploratory/unc_domain_confinement
 
 conda deactivate
-conda activate multiomics-r
+#conda activate multiomics-r
 
 #Rscript scripts/analysis/pathway_enrichment.R \
 #    --genelists results/exploratory/unc_selective_erasure/genelists \

@@ -246,7 +246,6 @@ def load_bins(compartments_path, keep_chroms):
     comp = comp.sort_values([COL_CHR, "bed_start"]).reset_index(drop=True)
     return comp
 
-
 def write_bins_bed(comp, path):
     comp[[COL_CHR, "bed_start", "bed_end", COL_COORD]].to_csv(
         path, sep="\t", header=False, index=False
@@ -259,7 +258,6 @@ def write_bins_bed(comp, path):
 # =============================================================================
 def compute_blacklist_fraction(bins, blacklist_path):
     """Fraction of each 250 kb bin covered by blacklist regions (pure Python).
-
     Used instead of deeptools' --blackListFileName, which REJECTS any bin that
     merely touches a blacklist entry -- far too aggressive at 250 kb resolution.
     Here we compute the actual covered fraction so we can drop only bins that are
@@ -409,8 +407,8 @@ def categorize_direction(both, switch, shift, pc1_par, pc1_b10):
     """Reproduces the lab's Both -> Switch -> Shift -> PC1-sign categorizer.
 
     Returns one of: 'A_to_B', 'B_to_A', 'Stable_A', 'Stable_B', None.
-    'TowardA'/'BtoA'/'toA'  => B_to_A (bin became more A)
-    'TowardB'/'AtoB'/'toB'  => A_to_B (bin became more B)
+    'TowardA'/'BtoA'/'toA'  => B_to_A (bin became A from B)
+    'TowardB'/'AtoB'/'toB'  => A_to_B (bin became B from A)
     """
     def clean(v):
         return str(v).strip()
@@ -865,36 +863,45 @@ def plot_forest(results, outpath):
     effect-size-first summary panel."""
     try:
         df = results.copy()
-        # order: B10 sets first (as listed), then Parental
-        order = list(range(len(df)))[::-1]   # top row = first plan entry
-        df = df.iloc[order].reset_index(drop=True)
+        # group by cell line; keep the within-line target order
+        df["_c"] = df["cell_line"].map({"B10": 0, "Parental": 1}).fillna(9)
+        df["_o"] = range(len(df))
+        df = (df.sort_values(["_c", "_o"], kind="stable")
+                .drop(columns=["_c", "_o"]).reset_index(drop=True))
+        df = df.iloc[::-1].reset_index(drop=True)        # first row on top
         colors = {"B10": "#1f77b4", "Parental": "#ff7f0e"}
         y = np.arange(len(df))
-        fig, ax = plt.subplots(figsize=(12, 0.55 * len(df) + 1.2),
+        fig, ax = plt.subplots(figsize=(11, 0.52 * len(df) + 1.6),
                                constrained_layout=True)
         for i, r in df.iterrows():
             c = colors.get(r["cell_line"], "k")
-            lo = r.get("ci_low", np.nan); hi = r.get("ci_high", np.nan)
+            lo, hi = r.get("ci_low", np.nan), r.get("ci_high", np.nan)
             if np.isfinite(lo) and np.isfinite(hi):
-                ax.plot([lo, hi], [i, i], color=c, lw=2, alpha=0.8, zorder=1)
-            ax.scatter(r["cliffs_delta"], i, color=c, s=45, zorder=2)
+                ax.plot([lo, hi], [i, i], color=c, lw=2.4, alpha=0.85, zorder=1)
+            ax.scatter(r["cliffs_delta"], i, color=c, s=50, zorder=2)
             star = " *" if (np.isfinite(r["perm_p_two_sided"])
                             and r["perm_p_two_sided"] < 0.05) else ""
-            ax.text(r["cliffs_delta"], i + 0.18,
-                    f"δ={r['cliffs_delta']:+.3f}{star}  (n={r['n_target']})",
-                    fontsize=12, ha="center", va="bottom", color=c)
+            ax.text(r["cliffs_delta"], i + 0.24,
+                    f"δ={r['cliffs_delta']:+.3f}{star} (n={r['n_target']})",
+                    fontsize=9, ha="center", va="bottom", color=c)
         ax.axvline(0, color="grey", ls=":", lw=1)
         ax.set_yticks(y)
         ax.set_yticklabels([f"{r['cell_line']}: {r['target_set']}"
-                            for _, r in df.iterrows()], fontsize=12)
-        ax.set_xlabel("Cliff's δ   (negative = H3K27me3 depletion enriched at target)", fontsize=12)
-        ax.tick_params(axis='x', labelsize=12)
+                            for _, r in df.iterrows()], fontsize=9)
+        ax.set_ylim(-0.7, len(df) - 1 + 0.95)            # headroom for top label
+        xmin = float(np.nanmin([results["ci_low"].min(), results["cliffs_delta"].min()]))
+        xmax = float(np.nanmax([results["ci_high"].max(), results["cliffs_delta"].max()]))
+        pad = 0.10 * (xmax - xmin)
+        ax.set_xlim(xmin - pad, xmax + pad)
+        ax.set_xlabel("Cliff's δ   (negative = H3K27me3 depletion enriched at target)",
+                      fontsize=11)
         ax.set_title("UNC selective-erasure effect sizes\n"
                      "(point = δ, bar = bootstrap 95% CI, * = perm p<0.05)")
         from matplotlib.lines import Line2D
         handles = [Line2D([0], [0], marker="o", color="w", label=k,
-                          markerfacecolor=v, markersize=8) for k, v in colors.items()]
-        ax.legend(handles=handles, fontsize=12, frameon=False, loc="lower right")
+                          markerfacecolor=v, markersize=9) for k, v in colors.items()]
+        ax.legend(handles=handles, fontsize=9, frameon=True, framealpha=0.9,
+                  loc="lower left")
         fig.savefig(outpath, dpi=150)
         plt.close(fig)
     except Exception as e:
@@ -1119,6 +1126,7 @@ def main(args):
     stab = master["is_stable"].values
 
     plan = [
+        # --- B10 arm (the migration line) ---
         ("B10", "migration_switchers", sw,      "dUNC_b10", "baseline_b10"),
         ("B10", "switchers_A_to_B",    atb,     "dUNC_b10", "baseline_b10"),
         ("B10", "switchers_B_to_A",    bta,     "dUNC_b10", "baseline_b10"),
@@ -1126,9 +1134,13 @@ def main(args):
         ("B10", "reverters_A_to_B",    rev_atb, "dUNC_b10", "baseline_b10"),
         ("B10", "reverters_B_to_A",    rev_bta, "dUNC_b10", "baseline_b10"),
         ("B10", "H3K27me3_gainers",    gain,    "dUNC_b10", "baseline_b10"),
-        # Parental control arm (reprogramming is a B10 property; effect should be
-        # B10-specific or stronger).  Reverter set is B10-only, so omitted here.
+        # --- Parental control arm: SAME loci (defined in B10), measured in parental.
+        #     A region-level control -> tells migration-driven from pre-existing.
+        #     Reverters are omitted: reversion is defined from the B10 DMSO->UNC
+        #     calls, so it has no parental counterpart.
         ("Parental", "migration_switchers", sw,   "dUNC_parental", "baseline_parental"),
+        ("Parental", "switchers_A_to_B",    atb,  "dUNC_parental", "baseline_parental"),
+        ("Parental", "switchers_B_to_A",    bta,  "dUNC_parental", "baseline_parental"),
         ("Parental", "H3K27me3_gainers",    gain, "dUNC_parental", "baseline_parental"),
     ]
 
