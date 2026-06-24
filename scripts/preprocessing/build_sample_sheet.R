@@ -2,30 +2,28 @@
 # =============================================================================
 # build_sample_sheet.R  (STAGE 0)  — turn a manifest (or a raw_dir) into the
 # analysis sample sheet that run_diffbind.R and run_csaw.R consume.
+#   (v2: + spike-in columns carried into the sheet, so csaw --spikein sheet works
+#    off ONE sheet, no separate spike-in CSV)
 #
 # TWO INPUT MODES:
 #   (A) --manifest manifest.csv   [PREFERRED for your data]
 #       Reads the auto-generated, hand-proofread manifest. Uses its real
-#       bam_basename/bam_path/peak_path, biological labels, and your manually
-#       filled Batch & IgG. This is the safe path because your folder names and
-#       inner file names disagree — the manifest records the verified truth.
+#       bam_basename/bam_path/peak_path, biological labels, your manually filled
+#       Batch & IgG, AND the spikein_reads parsed by generate_manifest.R.
 #   (B) --root raw_dir [--recursive]   [fallback]
-#       Parses folder names directly (assumes folder==filename). Fine for clean
-#       samples, but will MISS samples whose inner BAM name differs. Prefer (A).
+#       Parses folder names directly (assumes folder==filename) and parses the
+#       spike-in log from disk. Fine for clean samples; prefer (A).
 #
-# CASE-INSENSITIVE: 'Parental'=='parental', 'H3K27Me3'=='H3K27me3'. You may fill
-#   the manifest with any casing; everything is normalized here.
+# CASE-INSENSITIVE: 'Parental'=='parental', 'H3K27Me3'=='H3K27me3'.
 #
-# BATCH & IgG are OPTIONAL and may be entirely empty or partially filled:
-#   - empty Batch  -> all samples treated as one batch ('batch1'); no batch term.
-#   - filled Batch -> downstream adds a batch covariate only when a contrast
-#                     actually spans >1 batch.
-#   - empty IgG    -> bamControl blank; greylist/background simply not used.
-#   - filled IgG   -> resolved to that IgG folder's BAM as bamControl.
+# BATCH & IgG are OPTIONAL (may be empty/partial). spikein_reads may be empty for
+#   samples whose spike-in alignment FAILED — csaw only errors if such a sample
+#   is in a contrast run with --spikein sheet.
 #
 # OUTPUT (DiffBind-compatible + extras the analysis reads):
 #   SampleID, Condition, Treatment, Factor, Replicate, Batch,
-#   bamReads, ControlID, bamControl, Peaks, PeakCaller
+#   bamReads, ControlID, bamControl, Peaks, PeakCaller,
+#   spikein_reads, spikein_pct, spikein_status
 # =============================================================================
 
 suppressWarnings(suppressMessages(library(optparse)))
@@ -40,10 +38,10 @@ opt <- parse_args(OptionParser(option_list=list(
   make_option("--bam", type="character", default="dedup", help="dedup|dup (fallback mode only)"),
   make_option("--igg_root", type="character", default=NULL,
               help="Dir containing IgG folders named in the manifest's IgG column (default: --root or manifest dir)"),
-  make_option("--treatments", type="character", default="UNC,EPZ"),
+  make_option("--treatments", type="character", default="UNC,EPZ,DMSO"),
   make_option("--narrow_marks", type="character", default="H3K27AC"),
   make_option("--sample_regex", type="character",
-              default="^(Bottom10|Bottom|Control|Parental|B10)-(?:UNC-|EPZ-)?([A-Za-z0-9]+)-R([0-9]+)$"),
+              default="^(Bottom10|Bottom|Control|Parental|B10|B8|Bottom8)-(?:UNC-|EPZ-)?([A-Za-z0-9]+)-R([0-9]+)$"),
   make_option("--require_igg", action="store_true", default=FALSE)
 )))
 if (is.null(opt$manifest) && is.null(opt$root))
@@ -54,11 +52,43 @@ narrow_marks <- toupper(trimws(strsplit(opt$narrow_marks, ",")[[1]]))
 
 cond_norm <- function(x){ x<-tolower(trimws(x))
   if (x %in% c("control","parental")) "parental"
-  else if (x %in% c("bottom","bottom10","b10")) "B10" else x }
+  else if (x %in% c("bottom","bottom10","b10")) "B10" 
+  else if (x %in% c("bottom8","b8")) "B8"
+  else x }
 canon_mark <- function(m){ m<-toupper(trimws(m))
   core<-sub("^(H[0-9]+K[0-9]+).*$","\\1",m); rest<-tolower(sub("^H[0-9]+K[0-9]+","",m))
   paste0(core,rest) }
 blank <- function(x) is.na(x) | trimws(as.character(x))==""
+
+# -----------------------------------------------------------------------------
+# Spike-in log parsing (used in fallback mode; manifest mode inherits the values
+# already parsed by generate_manifest.R). Mirrors generate_manifest.R exactly.
+# -----------------------------------------------------------------------------
+find_spikein <- function(folder_path) {
+  d <- file.path(folder_path, "logs")
+  if (!dir.exists(d)) return(NA_character_)
+  f <- list.files(d, pattern = "\\.spikein\\.bowtie2$", full.names = TRUE)
+  if (length(f) == 0) return(NA_character_)
+  f[1]
+}
+parse_spikein_log <- function(path) {
+  if (is.na(path) || !nzchar(path) || !file.exists(path))
+    return(list(status = "NOT_FOUND", reads = NA, pct = NA))
+  txt <- tryCatch(readLines(path, warn = FALSE), error = function(e) character(0))
+  if (length(txt) == 0) return(list(status = "UNPARSED", reads = NA, pct = NA))
+  failed <- any(grepl("is not a Bowtie 2 index|does not exist|Exiting now|^\\(ERR\\)",
+                      txt, perl = TRUE))
+  if (failed && !any(grepl("overall alignment rate", txt)))
+    return(list(status = "FAILED_ALIGNMENT", reads = NA, pct = NA))
+  tline <- txt[grepl("reads; of these", txt)]
+  rline <- txt[grepl("overall alignment rate", txt)]
+  if (length(tline) == 0 || length(rline) == 0)
+    return(list(status = "UNPARSED", reads = NA, pct = NA))
+  total <- suppressWarnings(as.numeric(gsub("[^0-9]", "", sub("reads;.*", "", tline[1]))))
+  pct   <- suppressWarnings(as.numeric(sub("%.*", "", trimws(rline[1]))))
+  if (is.na(total) || is.na(pct)) return(list(status = "UNPARSED", reads = NA, pct = NA))
+  list(status = "OK", reads = round(total * pct / 100), pct = pct)
+}
 
 # =============================================================================
 # MODE A: manifest
@@ -69,12 +99,14 @@ if (!is.null(opt$manifest)) {
   miss <- setdiff(req, colnames(man))
   if (length(miss)) stop("Manifest missing columns: ", paste(miss, collapse=", "))
 
-  # bam_path/peak_path may be in the manifest; if not, we cannot guess — error.
   if (!"bam_path" %in% colnames(man) || any(blank(man$bam_path)))
-    stop("Manifest needs a non-empty 'bam_path' for every row ",
-         "(generate_manifest.R fills this). Re-generate the manifest.")
+    stop("Manifest needs a non-empty 'bam_path' for every row. Re-generate the manifest.")
   if (!"peak_path" %in% colnames(man)) man$peak_path <- ""
   if (!"peak_caller" %in% colnames(man)) man$peak_caller <- NA
+  has_spikein <- "spikein_reads" %in% colnames(man)
+  if (!has_spikein)
+    message("[NOTE] manifest has no spikein_reads column (older manifest); ",
+            "sheet's spikein_reads will be blank. Re-run generate_manifest.R to add it.")
 
   igg_root <- if (!is.null(opt$igg_root)) opt$igg_root else dirname(opt$manifest)
 
@@ -83,16 +115,11 @@ if (!is.null(opt$manifest)) {
     r <- man[i,]
     caller <- if (!is.na(r$peak_caller) && r$peak_caller!="") r$peak_caller
               else if (toupper(canon_mark(r$Factor)) %in% narrow_marks) "narrow" else "broad"
-
-    # Batch: blank -> batch1
     batch <- if (blank(r$Batch)) "batch1" else trimws(as.character(r$Batch))
 
-    # IgG: blank -> no control. Else resolve to that folder's BAM (look it up
-    # in raw_dir via the same aligned/<dedup|dup.marked> structure).
     cid <- NA; bc <- NA
     if ("IgG" %in% colnames(man) && !blank(r$IgG)) {
       igg_folder <- trimws(as.character(r$IgG))
-      # Try dedup then dup.marked; accept any single BAM inside.
       for (sd in c("dedup","dup.marked")) {
         d <- file.path(igg_root, igg_folder, "aligned", sd)
         if (dir.exists(d)) {
@@ -107,17 +134,21 @@ if (!is.null(opt$manifest)) {
       }
     }
 
+    sp_reads <- if (has_spikein) suppressWarnings(as.numeric(r$spikein_reads)) else NA
+    sp_pct   <- if ("spikein_pct" %in% colnames(man)) suppressWarnings(as.numeric(r$spikein_pct)) else NA
+    sp_stat  <- if ("spikein_status" %in% colnames(man)) as.character(r$spikein_status) else NA
+
     rows[[length(rows)+1]] <- data.frame(
       SampleID=r$folder, Condition=cond_norm(r$Condition),
       Treatment=tolower(trimws(r$Treatment)), Factor=canon_mark(r$Factor),
       Replicate=as.integer(r$Replicate), Batch=batch,
       bamReads=r$bam_path, ControlID=cid, bamControl=bc,
       Peaks=ifelse(blank(r$peak_path), NA, r$peak_path), PeakCaller=caller,
+      spikein_reads=sp_reads, spikein_pct=sp_pct, spikein_status=sp_stat,
       stringsAsFactors=FALSE)
   }
   sheet <- do.call(rbind, rows)
   rownames(sheet) <- NULL
-  # Ensure character columns stay character (rbind can coerce to factor)
   sheet$bamReads <- as.character(sheet$bamReads)
   sheet$bamControl <- as.character(sheet$bamControl)
   sheet$Peaks <- as.character(sheet$Peaks)
@@ -153,15 +184,19 @@ if (!is.null(opt$manifest)) {
     sub  <- if (isnar) "macs2.narrow" else "macs2.broad"
     patt <- if (isnar) "narrowPeak" else "broadPeak"
     pk   <- file.path(fp,"peakcalling",sub,paste0(folder,"_peaks.",patt))
+    spk  <- parse_spikein_log(find_spikein(fp))
     rows[[length(rows)+1]] <- data.frame(
       SampleID=folder, Condition=cond_norm(cond), Treatment=treat_of(folder),
       Factor=canon_mark(mark), Replicate=as.integer(rep), Batch="batch1",
       bamReads=bam, ControlID=NA, bamControl=NA,
-      Peaks=pk, PeakCaller=if(isnar)"narrow" else "broad", stringsAsFactors=FALSE)
+      Peaks=pk, PeakCaller=if(isnar)"narrow" else "broad",
+      spikein_reads=ifelse(is.na(spk$reads), NA, spk$reads),
+      spikein_pct=ifelse(is.na(spk$pct), NA, spk$pct),
+      spikein_status=spk$status,
+      stringsAsFactors=FALSE)
   }
   sheet<-do.call(rbind,rows)
   rownames(sheet) <- NULL
-  # Ensure character columns stay character (rbind can coerce to factor)
   sheet$bamReads <- as.character(sheet$bamReads)
   sheet$bamControl <- as.character(sheet$bamControl)
   sheet$Peaks <- as.character(sheet$Peaks)
@@ -171,18 +206,25 @@ if (!is.null(opt$manifest)) {
 chk <- function(v,l){ v<-v[!is.na(v) & v!=""]; m<-v[!file.exists(v)]
   if (length(m)) stop("Missing ",l," file(s):\n  ",paste(m,collapse="\n  ")) }
 chk(sheet$bamReads,"bamReads"); chk(sheet$bamControl,"bamControl")
-# Peaks may be NA (csaw doesn't require them); only check the non-NA ones.
 chk(sheet$Peaks[!is.na(sheet$Peaks)], "Peaks")
 
 message("[INFO] Factor/Treatment x Condition:")
 print(table(paste(sheet$Factor,sheet$Treatment,sep="/"), sheet$Condition))
 if (length(unique(sheet$Batch))==1) message("[INFO] Single batch — no batch term will be used.")
 
+# ---- spike-in availability summary ------------------------------------------
+if ("spikein_status" %in% colnames(sheet)) {
+  bad <- sheet[!is.na(sheet$spikein_status) & sheet$spikein_status != "OK" &
+               sheet$spikein_status != "NA",
+               c("SampleID","Factor","Treatment","Condition","spikein_status")]
+  if (nrow(bad) > 0) {
+    message("\n[NOTE] ", nrow(bad), " sample(s) lack a usable spike-in count; ",
+            "--spikein sheet will error only if one of them is in the contrast you run:")
+    print(bad, row.names = FALSE)
+  }
+}
+
 # ---- guard against two folders collapsing to the same biological identity ----
-# Two different SampleIDs (folders) that normalize to the same
-# Condition/Treatment/Factor/Replicate would be silently treated as distinct
-# replicates by csaw/DiffBind — inflating the replicate count with what may be
-# the same sample under two names. Flag this loudly rather than proceeding.
 id_key <- with(sheet, paste(Condition, Treatment, Factor, Replicate, sep = "|"))
 dup_keys <- id_key[duplicated(id_key)]
 if (length(dup_keys) > 0) {
@@ -191,8 +233,7 @@ if (length(dup_keys) > 0) {
   clash <- clash[order(paste(clash$Condition, clash$Treatment,
                              clash$Factor, clash$Replicate)), ]
   message("\n[ERROR] Multiple folders map to the SAME biological identity ",
-          "(Condition/Treatment/Factor/Replicate). These would be treated as ",
-          "separate replicates of one group — verify they are not the same ",
+          "(Condition/Treatment/Factor/Replicate). Verify they are not the same ",
           "sample under two folder names, or correct the Replicate numbers:")
   print(clash, row.names = FALSE)
   stop("Identity collision in sample sheet; resolve before running analyses.")

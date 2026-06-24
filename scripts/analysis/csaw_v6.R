@@ -145,9 +145,9 @@ parse_cli <- function() {
 
     # ---- interaction specification ----
     make_option("--cond_ref",  type = "character", default = "Parental",
-                help = "[interaction] Reference Condition. ALLOWED: 'Parental' | 'B10'. [default %default]"),
+                help = "[interaction] Reference Condition. ALLOWED: 'Parental' | 'B10' | 'B8'. [default %default]"),
     make_option("--treat_ref", type = "character", default = "none",
-                help = "[interaction] Reference Treatment. ALLOWED: 'none' | 'UNC'. [default %default]"),
+                help = "[interaction] Reference Treatment. ALLOWED: 'none' | 'UNC' | 'DMSO'. [default %default]"),
     make_option("--cond_alt",  type = "character", default = "B10",
                 help = "[interaction] Non-reference Condition. [default %default]"),
     make_option("--treat_alt", type = "character", default = "UNC",
@@ -201,7 +201,7 @@ parse_cli <- function() {
 
     # ---- filtering / significance ----
     make_option("--min_lfc_bg", type = "double", default = log2(3),
-                help = "Min log2 enrichment over background/IgG to KEEP a window. [default log2(3)=1.0]"),
+                help = "Min log2 enrichment over background/IgG to KEEP a window. [default log2(3)=1.585]"),
     make_option("--fdr", type = "double", default = 0.05,
                 help = "FDR cutoff for the significant subset. [default %default]"),
     make_option("--lfc", type = "double", default = 1.0,

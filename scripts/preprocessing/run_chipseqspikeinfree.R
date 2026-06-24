@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# run_chipseqspikeinfree.R  (v2)
+# run_chipseqspikeinfree.R  
 #   Spike-in-FREE global scaling factors for CUT&RUN/ChIP histone marks,
 #   driven from the project sample sheet, output formatted for csaw.R --normfactors.
 #

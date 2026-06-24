@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=chipseqspikeinfree
+#SBATCH --job-name=chipseqspikeinfree_chronic
 #SBATCH -A ACF-UTK0009
 #SBATCH --partition=condo-rmccord
 #SBATCH --qos=condo
@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=03:00:00
-#SBATCH --output=logs/chipseqspikeinfree_%j.out
-#SBATCH --error=logs/chipseqspikeinfree_%j.err
+#SBATCH --output=logs/chipseqspikeinfree_chronic_%j.out
+#SBATCH --error=logs/chipseqspikeinfree_chronic_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
 #SBATCH --mail-type=ALL
 #SBATCH --chdir=/lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-run_hi-c_multiomics_integration
@@ -20,8 +20,10 @@ conda activate multiomics-r
 
 Rscript scripts/preprocessing/run_chipseqspikeinfree.R \
     --sheet  data/processed/sample_sheet.csv \
-    --mark H3K27me3 \
-    --reference Parental-H3K27me3-R3 \
-    --outdir data/processed/spikefree
+    --mark Chronic \
+    --treatment dmso,unc \
+    --outdir data/processed/spikefree/H3K27Me3_chronic \
+    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed --qc 
+#    --reference Parental-H3K27me3-R3 \
 
 conda deactivate

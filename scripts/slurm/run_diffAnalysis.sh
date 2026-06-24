@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=csaw_migrated
+#SBATCH --job-name=diff_analysis
 #SBATCH -A ACF-UTK0009
 #SBATCH --partition=condo-rmccord
 #SBATCH --qos=condo
@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=03:00:00
-#SBATCH --output=logs/csaw_migrated_%j.out
-#SBATCH --error=logs/csaw_migrated_%j.err
+#SBATCH --output=logs/diff_analysis_%j.out
+#SBATCH --error=logs/diff_analysis_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
 #SBATCH --mail-type=ALL
 #SBATCH --chdir=/lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-run_hi-c_multiomics_integration
@@ -32,9 +32,9 @@ Rscript scripts/analysis/csaw_v6.R \
     --outdir results/exploratory/diff_analysis/csaw_v6/Migrated_B10unc \
     --mark migrated \
     --group1 "B10|UNC" --group2 "B10|DMSO" \
-    --norm libsize,background,spikein \
-    --spikein sheet 
-#    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
+    --norm libsize,background,spikein,sf \
+    --spikein sheet \
+    --normfactors data/processed/spikefree/H3K27Me3_migrated/Migrated_normfactors.csv 
 #    --peaks sheet \
 #    --baseline_group "Parental|none" \
 #    --greenlist data/processed/greenlist/greenlist_hg19.bed
@@ -46,13 +46,23 @@ Rscript scripts/analysis/csaw_v6.R \
     --outdir results/exploratory/diff_analysis/csaw_v6/Migrated_Parunc \
     --mark migrated \
     --group1 "Parental|UNC" --group2 "Parental|DMSO" \
-    --norm libsize,background,spikein \
-    --spikein sheet 
-#    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
+    --norm libsize,background,spikein,sf \
+    --spikein sheet \
+    --normfactors data/processed/spikefree/H3K27Me3_migrated/Migrated_normfactors.csv 
 #    --peaks sheet \
 #    --baseline_group "B10|none" \
 #    --greenlist data/processed/greenlist/greenlist_hg19.bed
 # Default: --test contrast
+
+
+Rscript scripts/analysis/csaw_v6.R \
+    --sheet data/processed/sample_sheet.csv \
+    --outdir results/exploratory/diff_analysis/csaw_v6/Chronic_B8unc \
+    --mark chronic \
+    --group1 "B8|UNC" --group2 "B8|DMSO" \
+    --norm libsize,background,spikein,sf \
+    --spikein sheet \
+    --normfactors data/processed/spikefree/H3K27Me3_chronic/Chronic_normfactors.csv 
 
 # Run differential analysis per mark/interaction:
 Rscript scripts/analysis/csaw_v6.R \
@@ -60,9 +70,10 @@ Rscript scripts/analysis/csaw_v6.R \
     --outdir results/exploratory/diff_analysis/csaw_v6/Migrated_H3K27me3_interaction \
     --mark migrated \
     --test interaction \
-    --norm libsize,background,spikein \
-    --spikein sheet 
-#    --normfactors data/processed/spikefree/H3K27me3_normfactors.csv \
+    --cond_ref Parental --cond_alt B10 --treat_ref DMSO --treat_alt UNC \
+    --norm libsize,background,spikein,sf \
+    --spikein sheet \
+    --normfactors data/processed/spikefree/H3K27Me3_migrated/Migrated_normfactors.csv 
 #    --peaks sheet \
 #    --greenlist data/processed/greenlist/greenlist_hg19.bed
 # Default reference levels:
