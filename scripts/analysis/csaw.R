@@ -1,198 +1,227 @@
+#!/usr/bin/env Rscript
 # =============================================================================
 # csaw.R — Window-based differential binding for BROAD histone marks
-#          (v5: + fixed spike-in sample keying, MDS shape/colour redesign with a
-#           batch-coloured companion, contrast-specific output tags, a legend
-#           slot for the strata figure, and up/down counts on the volcano)
 # =============================================================================
 #
 # PROJECT: A375 melanoma parental-vs-B10 constricted-migration multi-omics.
 #
-# WHAT THIS SCRIPT IS FOR ------------------------------------------------------
+# WHAT THIS SCRIPT DOES --------------------------------------------------------
 #   Broad chromatin marks (H3K27me3, H3K9me3, H3K4me1) form diffuse domains, not
 #   sharp peaks. We TILE the genome into fixed windows and test each window for
-#   differential coverage with the edgeR negative-binomial QL model; replicates
-#   supply the within-group variance that turns a fold-change into an FDR-
-#   controlled p-value. Adjacent windows are then merged into regions and their
-#   p-values combined. (Punctate H3K27Ac is handled separately by diffbind.R.)
+#   differential coverage with edgeR's negative-binomial quasi-likelihood (QL)
+#   model; replicates supply the within-group variance that turns a fold-change
+#   into an FDR-controlled p-value. Adjacent windows are merged into regions and
+#   their p-values combined (Simes -> region-level BH FDR), exactly the
+#   FDR-correct region-level workflow of Lun & Smyth (csaw). Punctate H3K27Ac is
+#   handled separately by diffbind.R.
+#
+# WHAT CHANGED FROM v5 (read this) --------------------------------------------
+#   1. NORMALIZATION IS NOW EXPLICIT AND CORRECTLY NAMED.
+#        v5 called its only data-free normalization "libsize", but it actually
+#        ran normFactors(bins) = TMM-on-bins = BACKGROUND normalizationeeps
+#        BOTH and names them correctly:
+#          libsize    = TRUE depth-only (norm.factors = 1). No composition/
+#                       "majority-unchanged" assumption. Cannot show a global
+#                       shift by construction (it forces equal totals).
+#          background = TMM on genome-wide bins (the old "libsize"). Assumes most
+#                       bins are unchanged -> a real caveat for a broad mark under
+#                       a global shift, because the bins are full of the mark.
+#      Pick methods with --norm (a COMMA-SEPARATED LIST, not an integer):
+#          --norm libsize,background          (default; both need no extra data)
+#          --norm libsize,background,greenlist  ... etc.
+#   2. GREENLIST normalization added (--greenlist BED). Same TMM machinery as
+#      background, but restricted to de Mello's pre-validated, biology-free
+#      regions -> the "stable majority" TMM wants, cleaner for a broad mark.
+#   3. SPIKE-IN (--spikein) and ChIPseqSpikeInFree SF (--normfactors) unchanged.
+#   4. TEST-AWARE LABELS. For --test contrast, up/down = "gained"/"lost" mark.
+#      For --test interaction, the tested coefficient is a DIFFERENCE OF
+#      DIFFERENCES, so up/down are relabeled "stronger loss in <cond_ref>" /
+#      "stronger loss in <cond_alt>" and the flattening/RTM verdict (a treatment
+#      concept) is SUPPRESSED for interaction.
+#   5. CONSOLIDATED PER-SAMPLE FACTOR TABLE. normfactors_used.csv lists, for every
+#      sample, the norm.factor AND effective library size under EACH method run.
+#   6. NEW NORMALIZATION-COMPARISON FIGURE (Egan et al. 2016, Fig 5 analog).
+#      Scatter (reference vs treated signal, one panel per method) + box plots
+#      (signal per condition, one panel per method) showing how much GLOBAL shift
+#      each normalization implies. CRITICAL: the amount of shift a method shows is
+#      a restatement of its scaling ASSUMPTION, not its correctness — so the
+#      figure is only interpretable when anchored:
+#        --reference_shift   draws the IF/western-measured global log2FC as a
+#                            reference band (the independent ground truth).
+#        --orthogonal_mark   re-runs the comparison on a control mark expected NOT
+#                            to change (e.g. H3K9me3); a shift in the test mark but
+#                            not the control mark = mark-specific = real biology.
+#      The libsize panel is annotated "(no shift by construction)" so a flat box is
+#      never misread as "no biology". Contrast-only (a 2-condition treated-vs-
+#      reference axis); skipped with a notice for --test interaction.
 #
 # TWO TEST MODES (--test) -----------------------------------------------------
 #   contrast    (default) Two-group comparison:
-#                 --group1 NUMERATOR --group2 REFERENCE  (Condition|Treatment)
+#                 --group1 NUMERATOR --group2 REFERENCE  ("Condition|Treatment")
 #                 Migration:     --group1 "B10|none"     --group2 "Parental|none"
 #                 UNC in B10:    --group1 "B10|UNC"      --group2 "B10|none"
 #                 UNC in parent: --group1 "Parental|UNC" --group2 "Parental|none"
 #   interaction  Factorial Condition*Treatment; tests the INTERACTION coefficient
-#                 (does UNC's effect differ between B10 and Parental?). Requires
-#                 all four cells (only H3K27me3 has them here).
-#   The four "Condition|Treatment" cells: Parental|none, B10|none, Parental|UNC,
-#   B10|UNC. Matching is CASE-INSENSITIVE ("Parental"=="parental").
+#                 (does UNC's effect differ between B10 and Parental?). Needs all
+#                 four cells. Matching is CASE-INSENSITIVE.
 #
-# OUTPUT TAG (self-identifying figures/files) ---------------------------------
+# OUTPUT TAG ------------------------------------------------------------------
 #   contrast    -> <mark>_<group1>_vs_<group2>   (e.g. H3K27me3_B10UNC_vs_B10none)
 #   interaction -> <mark>_interaction
-#   So two different contrasts no longer write identically-titled figures.
-#
-# KEYWORD 'sheet' RESOLUTION (peaks / igg / spikein) --------------------------
-#   Each of --peaks, --igg, --spikein accepts either the literal word 'sheet'
-#   (pull the information straight from the sample sheet, no retyping) OR an
-#   explicit external file/list. 'sheet' requires the matching sheet column:
-#     --peaks   sheet -> 'Peaks' column of the REFERENCE rows (group2 for a
-#                        contrast; the B10|none cell for an interaction), unioned
-#               file  -> comma-separated BED/narrowPeak/broadPeak/SEACR paths
-#     --igg     sheet -> 'bamControl' column of the test samples
-#               file  -> comma-separated IgG BAM paths
-#     --spikein sheet -> 'spikein_reads' column of the test samples
-#               file  -> CSV with columns SampleID,spikein_reads
-#   --baseline_group is always sheet-driven: you name a 'Condition|Treatment'
-#   group and its samples (already in the sheet) are counted in the same windows.
-#
-# BATCH HANDLING (per test, automatic) ----------------------------------------
-#   Batch is a categorical label (e.g. b20250401 = library-prep day / ConA bead
-#   lot / sequencing run). For EACH test the script inspects the Batch x Group
-#   structure of the samples involved and reports one of:
-#     [BATCH same]       one batch  -> no batch term (single level carries no
-#                        information); spike-in allowed.
-#     [BATCH crossed]    the tested coefficient is estimable AND the full design
-#                        is full-rank with Batch in the model -> Batch IS added to
-#                        the design; spike-in allowed (most reliable WITHIN a
-#                        batch).
-#     [BATCH partial]    the tested coefficient is estimable with Batch in the
-#                        model, but the FULL design is rank-deficient because a
-#                        NON-tested nuisance coefficient (e.g. the Treatment main
-#                        effect in an interaction model) is aliased with Batch.
-#                        edgeR needs the WHOLE design full-rank, so Batch is
-#                        DROPPED: the tested effect is still estimable without it
-#                        and Batch carried no usable information for it. The
-#                        aliased main effect is NOT interpretable; only the tested
-#                        (interaction) effect is reported. Spike-in DISABLED (the
-#                        interaction is a spike-in-independent relative claim; a
-#                        global-magnitude statement needs an orthogonal assay).
-#     [BATCH CONFOUNDED] Batch aliases the TESTED effect -> a loud warning; the
-#                        run CONTINUES as if a single batch (no batch term) so you
-#                        still get a result, BUT spike-in is DISABLED for this test
-#                        (cross-batch carryover cannot be separated from biology).
-#   The router requires the WHOLE design to be full rank (edgeR's requirement),
-#   not merely that the tested coefficient is estimable; both are checked by an
-#   actual rank test, correct for the contrast and the interaction designs.
-#
-# BASELINE STRATIFICATION (the PRC2 "flattening" signature) -------------------
-#   PRC2 inhibition erodes high-enrichment peaks while signal spreads into
-#   low/background regions (Romero et al. 2024). A single genome-wide test lets
-#   those opposite moves cancel, so we tag every region with its baseline
-#   abundance, split into strata, and report the up/down balance per stratum.
-#   Net LOSS at 'high' + net GAIN at 'low' = flattening.
-#     samedata  (default, RTM-PRONE) ranks by the reference group whose noise also
-#               enters logFC -> mechanically anti-correlated, can MANUFACTURE the
-#               shape via regression-to-the-mean (RTM).
-#     peak      (--peaks, RTM-IMMUNE, PRIMARY) peak membership is called vs IgG, a
-#               different model, so it does not inherit the contrast's logFC noise,
-#               and it marks where the mark IS in the treated cells.
-#     indep     (--baseline_group, threshold-free, SECONDARY) an independent group
-#               counted in the same windows, used only to rank baseline.
-#   The run prints a [STRAT:samedata]/[STRAT:peak]/[STRAT:indep] block plus an
-#   [STRAT verdict]: does the high-vs-low loss gradient SURVIVE the RTM-resistant
-#   stratifier? If yes the flattening is real; if it collapses it was largely RTM.
-#
-# SPIKE-IN (E. coli carryover; RRPM/Orlando) ---------------------------------
-#   Effective library size is set proportional to spike-in reads (norm.factors =
-#   spikein_reads / lib.size, geometric-mean-centred), REPLACING TMM, and written
-#   as a second 'spikein' result set. VALID ONLY across samples with comparable
-#   cell number + ConA beads -> WITHIN BATCH (see batch handling above). Spike-in
-#   fixes the GLOBAL scale (total loss, up/down balance), not which loci change
-#   relative to each other; treat libsize-vs-spikein agreement as a robustness
-#   check and anchor any global-magnitude claim with an orthogonal assay
-#   (e.g. western blot for total H3K27me3).
 #
 # SAMPLE SHEET ----------------------------------------------------------------
 #   Required : SampleID, Factor, Condition, Treatment, Replicate, Batch, bamReads
-#   Optional : spikein_reads (for --spikein sheet), Peaks (for --peaks sheet),
-#              bamControl (for --igg sheet)
+#   Optional : spikein_reads (--spikein sheet), Peaks (--peaks sheet),
+#              bamControl (--igg sheet)
 #   Allowed  : Condition Parental|B10 ; Treatment none|UNC (case-insensitive)
-#   Batch    : categorical, e.g. b20250401 (string so it is never read as numeric)
+#   NOTE     : Condition/Treatment columns are the SOURCE OF TRUTH for grouping.
+#              Sample NAMES are only labels; keep them consistent to avoid swaps.
 #
-# EXAMPLE USAGE ---------------------------------------------------------------
-#   # (1) Migration:
+# EXAMPLE RUNS ----------------------------------------------------------------
+#   # (1) Migration contrast, DEFAULT normalization (background only):
 #   Rscript csaw.R --sheet ss.csv --mark H3K27me3 \
 #       --group1 "B10|none" --group2 "Parental|none" --peaks sheet \
 #       --outdir results/diff/H3K27me3_migration
-#   # (2) UNC reversal in B10 (flagship, everything from the sheet):
+#
+#   # (1b) Same, but ALSO map genes to the significant regions (per-norm gene
+#   #      lists ready for the pathway-enrichment script):
+#   Rscript csaw.R --sheet ss.csv --mark H3K27me3 \
+#       --group1 "B10|none" --group2 "Parental|none" --peaks sheet \
+#       --genes data/processed/GeneListTSShg19_cleaned.txt \
+#       --outdir results/diff/H3K27me3_migration
+#
+#   # (2) UNC reversal in B10 — flagship for the compartment overlay. All five
+#   #     normalizations (each in its own subdir; libsize auto-added as the
+#   #     comparison reference), RTM-immune peak stratifier, an independent
+#   #     baseline group, the IF anchor, the orthogonal control mark, + genes:
 #   Rscript csaw.R --sheet ss.csv --mark H3K27me3 \
 #       --group1 "B10|UNC" --group2 "B10|none" \
-#       --peaks sheet --baseline_group "Parental|none" --spikein sheet \
+#       --norm background,greenlist,spikein,sf \
+#       --greenlist data/greenlist_hg19.bed \
+#       --spikein sheet --normfactors data/spikeinfree_SF.txt \
+#       --peaks sheet --baseline_group "Parental|none" \
+#       --genes data/processed/GeneListTSShg19_cleaned.txt \
+#       --reference_shift -2.32 --orthogonal_mark H3K9me3 \
 #       --outdir results/diff/H3K27me3_B10unc
-#   # (3) Interaction:
-#   Rscript csaw.R --sheet ss.csv --mark H3K27me3 --test interaction \
-#       --peaks sheet --spikein sheet \
-#       --outdir results/diff/H3K27me3_interaction
-#   # (4) External files instead of the sheet:
-#   Rscript csaw.R ... --peaks a.broadPeak,b.broadPeak --igg igg1.bam,igg2.bam \
-#       --spikein factors.csv ...
 #
-# OUTPUTS (into --outdir) -----------------------------------------------------
-#   <tag>_<norm>_all_regions.csv   coords, logFC, FDR, direction, baseline_logCPM,
-#                                  baseline_stratum, baseline_indep_logCPM,
-#                                  baseline_indep_stratum, in_peak
-#   <tag>_<norm>_significant.csv   subset passing FDR & |log2FC|
-#   <tag>_<norm>_{MDS,MDS_batch,MA,volcano,repcor,strata_balance}.{pdf,png}
-#       MDS       : shape = Condition, colour = Treatment
-#       MDS_batch : shape = Condition, colour = Batch (confound diagnostic)
-#       volcano   : up/down significant counts annotated
-#   <tag>_norm_compare.{pdf,png}   libsize-vs-spikein logFC (only with spike-in)
-#   <tag>_summary.txt              consolidated report (counts, batch verdict,
-#                                  stratification, spike-in factors, RTM verdict)
-#   <norm> is 'libsize' always, plus 'spikein' when --spikein is given & allowed.
-#   <tag>  is <mark>_<group1>_vs_<group2> (contrast) or <mark>_interaction.
+#   # (3) Interaction (no comparison figure; flattening verdict suppressed):
+#   Rscript csaw.R --sheet ss.csv --mark H3K27me3 --test interaction \
+#       --peaks sheet --genes data/processed/GeneListTSShg19_cleaned.txt \
+#       --outdir results/diff/H3K27me3_interaction
+#
+#   # (4) Comparison-figure-focused contrast (data-free pair + greenlist,
+#   #     anchored to IF). Asking for 2+ methods auto-adds libsize as reference:
+#   Rscript csaw.R --sheet ss.csv --mark H3K27me3 \
+#       --group1 "B10|UNC" --group2 "B10|none" \
+#       --norm background,greenlist --greenlist data/greenlist_hg19.bed \
+#       --reference_shift -2.32 --outdir results/diff/H3K27me3_normcompare
+#
+# OUTPUTS ---------------------------------------------------------------------
+#   Per-normalization outputs are written to their OWN SUBDIRECTORY under --outdir,
+#   one per method (e.g. <outdir>/background/, <outdir>/greenlist/):
+#     <outdir>/<norm>/<tag>_<norm>_all_regions.csv / _significant.csv
+#     <outdir>/<norm>/<tag>_<norm>_{MDS,MDS_batch,MA,volcano,repcor,strata_balance}.{pdf,png}
+#     <outdir>/<norm>/genelists/   (only with --genes; see below)
+#         background_universe.txt              (one gene per line; ORA background)
+#         <tag>_<norm>_<up_label>.txt          (genes in significant up regions)
+#         <tag>_<norm>_<down_label>.txt        (genes in significant down regions)
+#         <tag>_<norm>_gene_assignment.csv     (region->gene provenance)
+#   Cross-method comparison outputs stay in the TOP-LEVEL --outdir:
+#     <tag>_norm_compare.{pdf,png}             (per-region logFC concordance)
+#     <tag>_norm_comparison_scatter.{pdf,png}  (contrast only)
+#     <tag>_norm_comparison_box.{pdf,png}      (contrast only)
+#     <tag>_normfactors_used.csv               (per-sample factor per method)
+#     <tag>_summary.txt
 # =============================================================================
 
 suppressWarnings(suppressMessages({
-  library(optparse)
-  library(csaw)
-  library(edgeR)
-  library(GenomicRanges)
-  library(S4Vectors)
+  library(optparse)        # command-line option parsing
+  library(csaw)            # windowCounts / regionCounts / normFactors / mergeWindows
+  library(edgeR)           # NB-QL GLM, dispersion, DGEList, cpm
+  library(GenomicRanges)   # GRanges for peaks / greenlist / windows
+  library(S4Vectors)       # low-level Bioconductor helpers
 }))
 
 # =============================================================================
-# CLI
+# CLI — every option carries its allowed values / format in the help string
 # =============================================================================
 parse_cli <- function() {
   option_list <- list(
     make_option("--sheet", type = "character",
-                help = "REQUIRED. Sample sheet CSV. Columns: SampleID, Factor, Condition, Treatment, Replicate, Batch, bamReads (+ optional spikein_reads / Peaks / bamControl for the 'sheet' keyword)."),
+                help = "REQUIRED. Sample sheet CSV (cols: SampleID, Factor, Condition, Treatment, Replicate, Batch, bamReads; + optional spikein_reads / Peaks / bamControl)."),
     make_option("--mark", type = "character",
-                help = "REQUIRED. Factor/antibody, matched case-insensitively to the Factor column. Examples: H3K27me3 | H3K9me3 | H3K4me1. (Punctate H3K27Ac -> diffbind.R.)"),
+                help = "REQUIRED. Factor/antibody, matched case-insensitively to the Factor column (e.g. H3K27me3 | H3K9me3 | H3K4me1)."),
 
     make_option("--test", type = "character", default = "contrast",
                 help = "Test mode. ALLOWED: 'contrast' | 'interaction'. [default %default]"),
 
+    # ---- contrast specification ----
     make_option("--group1", type = "character", default = "B10|none",
-                help = "[contrast] Numerator 'Condition|Treatment'. One of: 'Parental|none' | 'B10|none' | 'Parental|UNC' | 'B10|UNC'. [default %default]"),
+                help = "[contrast] Numerator 'Condition|Treatment' (treated). One of Parental|none | B10|none | Parental|UNC | B10|UNC. [default %default]"),
     make_option("--group2", type = "character", default = "Parental|none",
-                help = "[contrast] Reference 'Condition|Treatment' (same allowed set). Positive logFC = higher in group1. [default %default]"),
+                help = "[contrast] Reference 'Condition|Treatment'. Positive logFC = higher in group1. [default %default]"),
 
-    make_option("--cond_ref", type = "character", default = "Parental",
-                help = "[interaction] Reference Condition. ALLOWED: 'Parental' | 'B10'. [default %default]"),
+    # ---- interaction specification ----
+    make_option("--cond_ref",  type = "character", default = "Parental",
+                help = "[interaction] Reference Condition. ALLOWED: 'Parental' | 'B10' | 'B8'. [default %default]"),
     make_option("--treat_ref", type = "character", default = "none",
-                help = "[interaction] Reference Treatment. ALLOWED: 'none' | 'UNC'. [default %default]"),
-    make_option("--cond_alt", type = "character", default = "B10",
-                help = "[interaction] Non-reference Condition. ALLOWED: 'Parental' | 'B10'. [default %default]"),
+                help = "[interaction] Reference Treatment. ALLOWED: 'none' | 'UNC' | 'DMSO'. [default %default]"),
+    make_option("--cond_alt",  type = "character", default = "B10",
+                help = "[interaction] Non-reference Condition. [default %default]"),
     make_option("--treat_alt", type = "character", default = "UNC",
-                help = "[interaction] Non-reference Treatment. ALLOWED: 'none' | 'UNC'. [default %default]"),
+                help = "[interaction] Non-reference Treatment. [default %default]"),
 
     make_option("--outdir", type = "character", default = "csaw_out",
-                help = "Output directory, e.g. results/diff/H3K27me3_B10unc. [default %default]"),
+                help = "Output directory. [default %default]"),
 
-    make_option("--window", type = "integer", default = 2000L,
+    # ---- NORMALIZATION SELECTOR (string list, NOT an integer) ----
+    make_option("--norm", type = "character", default = "background",
+                help = paste0("Comma-separated normalizations to run. ALLOWED tokens: ",
+                              "libsize | background | greenlist | spikein | sf. ",
+                              "background (TMM on genome-wide bins) is the DEFAULT and needs no external data; ",
+                              "libsize also needs no external data. ",
+                              "greenlist needs --greenlist; spikein needs --spikein; sf needs --normfactors. ",
+                              "When 2+ methods are requested, 'libsize' is auto-added as the comparison reference. ",
+                              "[default %default]")),
+
+    # ---- normalization data inputs ----
+    make_option("--greenlist", type = "character", default = NULL,
+                help = paste0("Greenlist normalization regions: a 3-column BED (chrom<TAB>start<TAB>end) of ",
+                              "de Mello CUT&RUN greenlist regions IN YOUR GENOME BUILD (hg19; liftOver the ",
+                              "published hg38 list first). TMM is computed on read counts in these regions. [default: none]")),
+    make_option("--spikein", type = "character", default = NULL,
+                help = "Spike-in (Orlando/RRPM) from READ COUNTS: norm.factor = spikein_reads/lib.size. 'sheet' (read spikein_reads column) OR a CSV with columns SampleID,spikein_reads. [default: none]"),
+    make_option("--normfactors", type = "character", default = NULL,
+                help = "Precomputed per-sample scaling factors (e.g. ChIPseqSpikeInFree). Tab/comma table with an ID column (SampleID/ID/Sample) and a factor column (SF/factor/ScalingFactor/norm.factors). 'QC' column checked; NA/non-positive rejected. [default: none]"),
+    make_option("--force_norm", action = "store_true", default = FALSE,
+                help = "Apply spikein/sf EVEN when batch is non-separable (confounded/partial). Only with an external magnitude anchor. [default: FALSE]"),
+
+    # ---- NEW: comparison-figure anchors ----
+    make_option("--reference_shift", type = "double", default = NULL,
+                help = paste0("Externally measured global log2 fold-change of the mark, TREATED (group1) ",
+                              "RELATIVE TO REFERENCE (group2), from IF/western/mass-spec. Negative = loss ",
+                              "(e.g. a 5-fold reduction = log2(1/5) = -2.32). Drawn as a reference band on the ",
+                              "normalization-comparison figure (the independent ground truth). [default: none]")),
+    make_option("--orthogonal_mark", type = "character", default = NULL,
+                help = paste0("Name of a CONTROL mark expected NOT to change under the perturbation (e.g. H3K9me3), ",
+                              "matched to the Factor column. If its samples for BOTH contrast conditions are present ",
+                              "in the sheet, the comparison figure gains a control-mark row (a shift in the test mark ",
+                              "but not here = mark-specific = real). If the samples are absent, the flag is accepted ",
+                              "and the control row is skipped with a notice. [default: none]")),
+
+    # ---- counting / windows ----
+    make_option("--window",  type = "integer", default = 2000L,
                 help = "Window width (bp). Broad marks: 2000. [default %default]"),
     make_option("--spacing", type = "integer", default = 500L,
                 help = "Spacing between window starts (bp); also the region-merge tolerance. [default %default]"),
-    make_option("--bg_bin", type = "integer", default = 10000L,
-                help = "Background bin width (bp) for TMM + the enrichment filter. [default %default]"),
+    make_option("--bg_bin",  type = "integer", default = 10000L,
+                help = "Background bin width (bp) for TMM (background norm) + enrichment filter. [default %default]"),
     make_option("--frag_max", type = "integer", default = 700L,
                 help = "Max fragment length (bp); match Bowtie2 -X. [default %default]"),
 
-    make_option("--min_lfc_bg", type = "double", default = log2(2),
-                help = "Min log2 enrichment over background/IgG to KEEP a window. [default log2(2)=1.0]"),
+    # ---- filtering / significance ----
+    make_option("--min_lfc_bg", type = "double", default = log2(3),
+                help = "Min log2 enrichment over background/IgG to KEEP a window. [default log2(3)=1.585]"),
     make_option("--fdr", type = "double", default = 0.05,
                 help = "FDR cutoff for the significant subset. [default %default]"),
     make_option("--lfc", type = "double", default = 1.0,
@@ -200,21 +229,28 @@ parse_cli <- function() {
     make_option("--n_strata", type = "integer", default = 3L,
                 help = "Number of baseline-abundance strata (>=2). 3 -> low/mid/high. [default %default]"),
 
+    # ---- optional filters / stratifiers ----
     make_option("--blacklist", type = "character", default = NULL,
                 help = "Optional ENCODE blacklist BED (e.g. hg19-blacklist.v2.bed). [default: none]"),
     make_option("--igg", type = "character", default = NULL,
                 help = "IgG enrichment filter. 'sheet' (read bamControl column) OR comma-separated IgG BAM path(s). [default: none]"),
-    make_option("--spikein", type = "character", default = NULL,
-                help = "Spike-in (Orlando/RRPM) normalization from READ COUNTS: norm.factor = spikein_reads/lib.size. 'sheet' (read spikein_reads column) OR a CSV with columns SampleID,spikein_reads. Writes a 'spikein' result set. [default: none]"),
-    make_option("--normfactors", type = "character", default = NULL,
-                help = "PRECOMPUTED scaling factors injected directly as norm.factors (e.g. ChIPseqSpikeInFree). Path to a tab/comma table with an ID column (SampleID or ID, matched to SampleID or bamReads basename) and a factor column (SF/factor/ScalingFactor/norm.factors). A 'QC' column (ChIPseqSpikeInFree) is checked; 'NA'/non-positive SF is rejected. Writes an 'sf' result set. [default: none]"),
-    make_option("--force_norm", action = "store_true", default = FALSE,
-                help = "Apply --spikein / --normfactors EVEN when the batch verdict is non-separable (confounded/partial). Use only when the global magnitude is anchored externally (e.g. ChIPseqSpikeInFree + western blot). [default: FALSE]"),
-
     make_option("--peaks", type = "character", default = NULL,
-                help = "RTM-immune peak stratifier. 'sheet' (read Peaks column of the reference rows, unioned) OR comma-separated BED/narrowPeak/broadPeak/SEACR path(s). Use a BROAD call for H3K27me3. [default: none]"),
+                help = "RTM-immune peak stratifier. 'sheet' (Peaks column of reference rows, unioned) OR comma-separated BED/narrowPeak/broadPeak/SEACR path(s). Use a BROAD call for H3K27me3. [default: none]"),
     make_option("--baseline_group", type = "character", default = NULL,
-                help = "Independent baseline stratifier: a 'Condition|Treatment' group (e.g. 'Parental|none') counted in the same windows and used ONLY to rank baseline. Must be independent of the tested coefficient. [default: none]")
+                help = "Independent baseline stratifier: a 'Condition|Treatment' group counted in the same windows, used ONLY to rank baseline (must be independent of the tested coefficient). [default: none]"),
+
+    # ---- optional gene mapping (for the pathway-enrichment script) ----
+    make_option("--genes", type = "character", default = NULL,
+                help = paste0("Optional hg19 gene annotation; if given, maps genes to the significant regions of EACH ",
+                              "normalization. Tab- or comma-delimited table with a gene-name column ",
+                              "(gene_name | gene | symbol | name) and EITHER a TSS column (TSS) OR start+end columns ",
+                              "(start/end | txStart/txEnd | bin_start/bin_end), plus a chromosome column ",
+                              "(chr | chrom | seqnames). The chromosome naming MUST match your BAMs (e.g. 'chr1'). ",
+                              "A gene maps to a region when its TSS (or gene body) overlaps the region. Writes, into ",
+                              "<outdir>/<norm>/genelists/ : one-gene-per-line lists for the up- and down-significant ",
+                              "regions (named by the test-aware direction label), a background_universe.txt of all genes ",
+                              "in tested regions, and a *_gene_assignment.csv provenance table. Ready for the ",
+                              "pathway-enrichment script. [default: none]"))
   )
   opt <- parse_args(OptionParser(option_list = option_list))
   if (is.null(opt$sheet)) stop("--sheet is required.")
@@ -225,29 +261,25 @@ parse_cli <- function() {
   opt
 }
 
+# Split a 'Condition|Treatment' spec into a lowercased list.
 parse_group <- function(spec) {
   parts <- strsplit(spec, "\\|")[[1]]
-  if (length(parts) != 2)
-    stop("Group spec must be 'Condition|Treatment', got: ", spec)
+  if (length(parts) != 2) stop("Group spec must be 'Condition|Treatment', got: ", spec)
   list(cond = tolower(trimws(parts[1])), treat = tolower(trimws(parts[2])))
 }
 
-# filesystem-safe token (strip '|', spaces, etc.) for the output tag
+# Filesystem-safe token (strip '|', spaces, etc.) for the output tag.
 safe_token <- function(s) gsub("[^A-Za-z0-9]+", "", s)
 
 # =============================================================================
-# Small helpers
+# Logging — collect lines so we can also dump them into the summary report
 # =============================================================================
-log_lines <- new.env()                 # collect lines for the summary report
-log_lines$txt <- character(0)
-say <- function(...) {
-  line <- paste0(...)
-  cat(line, "\n")
-  log_lines$txt <- c(log_lines$txt, line)
-}
+log_lines <- new.env(); log_lines$txt <- character(0)
+say <- function(...) { line <- paste0(...); cat(line, "\n"); log_lines$txt <- c(log_lines$txt, line) }
 
+# Robust 3-column reader for BED / narrowPeak / broadPeak / SEACR / greenlist.
+# BED is 0-based half-open; we add 1 to start to get 1-based GRanges coordinates.
 read_bed3 <- function(path) {
-  # Robust 3-column reader for BED / narrowPeak / broadPeak / SEACR-bed.
   df <- read.table(path, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
                    comment.char = "#", quote = "")
   GRanges(seqnames = df[[1]],
@@ -255,20 +287,21 @@ read_bed3 <- function(path) {
 }
 
 # =============================================================================
-# Sample selection
+# Sample sheet + selection
 # =============================================================================
 load_sheet <- function(path) {
   ss <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
   req <- c("SampleID", "Factor", "Condition", "Treatment", "Replicate", "Batch", "bamReads")
   miss <- setdiff(req, colnames(ss))
   if (length(miss)) stop("Sample sheet missing columns: ", paste(miss, collapse = ", "))
-  ss$.cond  <- tolower(trimws(ss$Condition))
+  ss$.cond  <- tolower(trimws(ss$Condition))    # lowercased helpers for case-insensitive matching
   ss$.treat <- tolower(trimws(ss$Treatment))
   ss$.fac   <- tolower(trimws(ss$Factor))
-  ss$Batch  <- as.character(ss$Batch)
+  ss$Batch  <- as.character(ss$Batch)           # keep batch as a string, never numeric
   ss
 }
 
+# Pick the rows for the requested mark + test, build the model factors, check BAMs.
 select_samples <- function(ss, opt) {
   mark <- tolower(trimws(opt$mark))
   ss <- ss[ss$.fac == mark, , drop = FALSE]
@@ -280,7 +313,7 @@ select_samples <- function(ss, opt) {
     ss$.key <- paste(ss$.cond, ss$.treat, sep = "|")
     sub <- ss[ss$.key %in% c(key(g1), key(g2)), , drop = FALSE]
     if (!nrow(sub)) stop("No samples match group1/group2.")
-    # Group factor: reference = group2
+    # Reference level = group2, so a positive logFC means "higher in group1".
     sub$Group <- factor(sub$.key, levels = c(key(g2), key(g1)))
     if (any(is.na(sub$Group))) stop("Group level mismatch.")
     sub$.role <- ifelse(sub$.key == key(g1), "group1", "group2")
@@ -290,11 +323,11 @@ select_samples <- function(ss, opt) {
     tr <- tolower(opt$treat_ref); ta <- tolower(opt$treat_alt)
     sub <- ss[ss$.cond %in% c(cr, ca) & ss$.treat %in% c(tr, ta), , drop = FALSE]
     if (!nrow(sub)) stop("No samples match the interaction cells.")
-    sub$Condition <- factor(sub$.cond, levels = c(cr, ca))
+    sub$Condition <- factor(sub$.cond, levels = c(cr, ca))   # reference first
     sub$Treatment <- factor(sub$.treat, levels = c(tr, ta))
     if (any(is.na(sub$Condition)) || any(is.na(sub$Treatment)))
       stop("Interaction factor level mismatch.")
-    # reference rows for sheet-peaks: the cond_alt|treat_ref cell (e.g. B10|none)
+    # Reference rows for sheet-peaks: the cond_alt|treat_ref cell (e.g. B10|none).
     attr(sub, "peak_ref") <- sub$.cond == ca & sub$.treat == tr
   }
   if (any(!file.exists(sub$bamReads)))
@@ -302,126 +335,136 @@ select_samples <- function(ss, opt) {
   sub
 }
 
-# Which rows are the "reference" for sheet-peaks?
+# Which rows are the "reference" used for sheet-driven peaks / baseline ranking?
 ref_rows <- function(meta, opt) {
   if (opt$test == "contrast") meta$.role == "group2" else attr(meta, "peak_ref")
 }
 
 # =============================================================================
-# Resolve peaks / igg / spikein from 'sheet' or external files
+# Resolve optional inputs (peaks / igg / spikein / sf / greenlist)
 # =============================================================================
 resolve_peaks <- function(opt, meta) {
   if (is.null(opt$peaks)) return(NULL)
   if (identical(opt$peaks, "sheet")) {
-    if (!"Peaks" %in% colnames(meta))
-      stop("--peaks sheet requested but the sample sheet has no 'Peaks' column.")
+    if (!"Peaks" %in% colnames(meta)) stop("--peaks sheet requested but no 'Peaks' column.")
     paths <- unique(meta$Peaks[ref_rows(meta, opt)])
     paths <- paths[!is.na(paths) & nzchar(paths)]
     if (!length(paths)) stop("--peaks sheet: no Peaks paths on the reference rows.")
-  } else {
-    paths <- trimws(strsplit(opt$peaks, ",")[[1]])
-  }
-  miss <- paths[!file.exists(paths)]
-  if (length(miss)) stop("Peak file(s) not found: ", paste(miss, collapse = ", "))
-  gr <- Reduce(c, lapply(paths, read_bed3))
-  gr <- reduce(gr)
-  say(sprintf("[PEAKS] %d peak file(s) -> %d merged peak regions", length(paths), length(gr)))
+  } else paths <- trimws(strsplit(opt$peaks, ",")[[1]])
+  miss <- paths[!file.exists(paths)]; if (length(miss)) stop("Peak file(s) not found: ", paste(miss, collapse = ", "))
+  gr <- reduce(Reduce(c, lapply(paths, read_bed3)))   # union, then collapse overlaps
+  say(sprintf("[PEAKS] %d file(s) -> %d merged peak regions", length(paths), length(gr)))
   gr
 }
 
 resolve_igg <- function(opt, meta) {
   if (is.null(opt$igg)) return(NULL)
   if (identical(opt$igg, "sheet")) {
-    if (!"bamControl" %in% colnames(meta))
-      stop("--igg sheet requested but the sample sheet has no 'bamControl' column.")
-    bams <- unique(meta$bamControl)
-    bams <- bams[!is.na(bams) & nzchar(bams)]
-  } else {
-    bams <- trimws(strsplit(opt$igg, ",")[[1]])
-  }
-  miss <- bams[!file.exists(bams)]
-  if (length(miss)) stop("IgG BAM(s) not found: ", paste(miss, collapse = ", "))
+    if (!"bamControl" %in% colnames(meta)) stop("--igg sheet requested but no 'bamControl' column.")
+    bams <- unique(meta$bamControl); bams <- bams[!is.na(bams) & nzchar(bams)]
+  } else bams <- trimws(strsplit(opt$igg, ",")[[1]])
+  miss <- bams[!file.exists(bams)]; if (length(miss)) stop("IgG BAM(s) not found: ", paste(miss, collapse = ", "))
   bams
 }
 
+# Returns a named numeric vector of spike-in read counts keyed by SampleID, or NULL.
 resolve_spikein <- function(opt, meta) {
-  # returns a named numeric vector spikein_reads keyed by SampleID, or NULL
   if (is.null(opt$spikein)) return(NULL)
   if (identical(opt$spikein, "sheet")) {
-    if (!"spikein_reads" %in% colnames(meta))
-      stop("--spikein sheet requested but the sample sheet has no 'spikein_reads' column.")
+    if (!"spikein_reads" %in% colnames(meta)) stop("--spikein sheet requested but no 'spikein_reads' column.")
     v <- setNames(as.numeric(meta$spikein_reads), meta$SampleID)
   } else {
     sp <- read.csv(opt$spikein, stringsAsFactors = FALSE)
-    if (!all(c("SampleID", "spikein_reads") %in% colnames(sp)))
-      stop("--spikein CSV needs columns SampleID,spikein_reads.")
-    v <- setNames(as.numeric(sp$spikein_reads), sp$SampleID)
-    v <- v[meta$SampleID]
+    if (!all(c("SampleID", "spikein_reads") %in% colnames(sp))) stop("--spikein CSV needs SampleID,spikein_reads.")
+    v <- setNames(as.numeric(sp$spikein_reads), sp$SampleID)[meta$SampleID]
   }
   if (any(is.na(v)) || any(v <= 0))
-    stop("spikein_reads has NA / non-positive values for: ",
-         paste(meta$SampleID[is.na(v) | v <= 0], collapse = ", "))
+    stop("spikein_reads NA/non-positive for: ", paste(meta$SampleID[is.na(v) | v <= 0], collapse = ", "))
   v
 }
 
+# Precomputed SF table (e.g. ChIPseqSpikeInFree). Flexible column/key detection.
 resolve_normfactors <- function(opt, meta) {
-  # Precomputed per-sample scaling factors (e.g. ChIPseqSpikeInFree _SF.txt or any
-  # CSV). Flexible: auto-detect tab/comma; accept SF/factor/ScalingFactor/norm.factors
-  # as the factor column and SampleID/ID/Sample as the key; match the key against
-  # SampleID first, then the bamReads basename (ChIPseqSpikeInFree keys by bam name).
-  # Returns a numeric vector keyed by meta$SampleID, or NULL.
   if (is.null(opt$normfactors)) return(NULL)
   if (!file.exists(opt$normfactors)) stop("--normfactors file not found: ", opt$normfactors)
   first <- readLines(opt$normfactors, n = 1L, warn = FALSE)
-  sep   <- if (grepl("\t", first)) "\t" else ","
+  sep   <- if (grepl("\t", first)) "\t" else ","                 # auto-detect tab vs comma
   tab   <- read.table(opt$normfactors, header = TRUE, sep = sep, quote = "\"",
                       stringsAsFactors = FALSE, check.names = FALSE, fill = TRUE)
-
-  fcol <- intersect(c("SF", "factor", "ScalingFactor", "norm.factors", "normfactor"),
-                    colnames(tab))
-  if (!length(fcol))
-    stop("--normfactors: no scaling-factor column (looked for SF / factor / ScalingFactor / ",
-         "norm.factors). Columns present: ", paste(colnames(tab), collapse = ", "))
+  fcol <- intersect(c("SF", "factor", "ScalingFactor", "norm.factors", "normfactor"), colnames(tab))
+  if (!length(fcol)) stop("--normfactors: no scaling-factor column found. Columns: ", paste(colnames(tab), collapse = ", "))
   icol <- intersect(c("SampleID", "ID", "Sample", "sample"), colnames(tab))
-  if (!length(icol))
-    stop("--normfactors: no ID column (looked for SampleID / ID / Sample). Columns present: ",
-         paste(colnames(tab), collapse = ", "))
-  ids <- as.character(tab[[icol[1]]])
-  sf  <- suppressWarnings(as.numeric(tab[[fcol[1]]]))
-
-  # match each of our samples to a row in the SF table
+  if (!length(icol)) stop("--normfactors: no ID column found. Columns: ", paste(colnames(tab), collapse = ", "))
+  ids <- as.character(tab[[icol[1]]]); sf <- suppressWarnings(as.numeric(tab[[fcol[1]]]))
   bn  <- basename(meta$bamReads)
-  out <- setNames(rep(NA_real_, nrow(meta)), meta$SampleID)
-  qc_used <- character(0)
-  for (i in seq_len(nrow(meta))) {
-    hit <- which(ids == meta$SampleID[i])
-    if (!length(hit)) hit <- which(ids == bn[i])
+  out <- setNames(rep(NA_real_, nrow(meta)), meta$SampleID); qc_used <- character(0)
+  for (i in seq_len(nrow(meta))) {                                # match SampleID, else BAM basename
+    hit <- which(ids == meta$SampleID[i]); if (!length(hit)) hit <- which(ids == bn[i])
     if (!length(hit)) hit <- which(basename(ids) == bn[i])
-    if (length(hit)) {
-      out[i] <- sf[hit[1]]
-      if ("QC" %in% colnames(tab)) qc_used <- c(qc_used, as.character(tab$QC[hit[1]]))
-    }
+    if (length(hit)) { out[i] <- sf[hit[1]]; if ("QC" %in% colnames(tab)) qc_used <- c(qc_used, as.character(tab$QC[hit[1]])) }
   }
   if (length(qc_used) && any(!grepl("pass", tolower(qc_used))))
-    say("[NORMFACTORS] WARNING: a matched row has QC != 'pass' (ChIPseqSpikeInFree flags poor ",
-        "enrichment / complete loss). Verify before trusting its factor.")
-  if (any(is.na(out)))
-    stop("--normfactors: could not match a factor for: ",
-         paste(meta$SampleID[is.na(out)], collapse = ", "),
-         "\n  ID column held (first few): ", paste(head(ids, 8), collapse = ", "),
-         "\n  Matching is tried against SampleID and the bamReads basename.")
-  if (any(out <= 0))
-    stop("--normfactors: non-positive / NA factor for: ",
-         paste(meta$SampleID[out <= 0], collapse = ", "),
-         "\n  (A ChIPseqSpikeInFree 'NA' SF means complete loss / poor enrichment; resolve per its ",
-         "README before injecting.)")
+    say("[NORMFACTORS] WARNING: a matched row has QC != 'pass' (ChIPseqSpikeInFree flags poor enrichment / complete loss). Verify before trusting it.")
+  if (any(is.na(out))) stop("--normfactors: could not match a factor for: ", paste(meta$SampleID[is.na(out)], collapse = ", "))
+  if (any(out <= 0))   stop("--normfactors: non-positive/NA factor for: ", paste(meta$SampleID[out <= 0], collapse = ", "))
   out
+}
+
+# Read the greenlist BED (only if greenlist is among the requested methods).
+resolve_greenlist <- function(opt) {
+  if (is.null(opt$greenlist)) return(NULL)
+  if (!file.exists(opt$greenlist)) stop("--greenlist file not found: ", opt$greenlist)
+  gr <- reduce(read_bed3(opt$greenlist))
+  say(sprintf("[GREENLIST] %d normalizer regions loaded (assumed hg19; verify low signal in your IgG).", length(gr)))
+  gr
+}
+
+# Read the optional gene annotation into a GRanges with a 'gene' metadata column.
+# Flexible column detection; prefers a single-bp TSS feature, else the gene body.
+# Returns NULL if --genes was not supplied.
+resolve_genes <- function(opt) {
+  if (is.null(opt$genes)) return(NULL)
+  if (!file.exists(opt$genes)) stop("--genes file not found: ", opt$genes)
+  first <- readLines(opt$genes, n = 1L, warn = FALSE)
+  sep   <- if (grepl("\t", first)) "\t" else ","                    # auto-detect tab vs comma
+  tab   <- read.table(opt$genes, header = TRUE, sep = sep, quote = "\"",
+                      stringsAsFactors = FALSE, check.names = FALSE, fill = TRUE)
+  name_col <- intersect(c("gene_name", "gene", "symbol", "Symbol", "name", "Gene", "GeneSymbol"), colnames(tab))
+  if (!length(name_col)) stop("--genes: no gene-name column (looked for gene_name/gene/symbol/name). Columns: ", paste(colnames(tab), collapse = ", "))
+  chr_col  <- intersect(c("chr", "chrom", "Chr", "Chrom", "seqnames", "chromosome"), colnames(tab))
+  if (!length(chr_col)) stop("--genes: no chromosome column (chr/chrom/seqnames). Columns: ", paste(colnames(tab), collapse = ", "))
+  tss_col   <- intersect(c("TSS", "tss", "Tss"), colnames(tab))
+  start_col <- intersect(c("start", "Start", "txStart", "bin_start", "geneStart"), colnames(tab))
+  end_col   <- intersect(c("end", "End", "txEnd", "bin_end", "geneEnd"), colnames(tab))
+
+  chr  <- as.character(tab[[chr_col[1]]])
+  gene <- as.character(tab[[name_col[1]]])
+  if (length(tss_col)) {
+    pos  <- suppressWarnings(as.integer(tab[[tss_col[1]]]))
+    keep <- !is.na(pos) & !is.na(chr) & nzchar(gene)
+    gr   <- GRanges(seqnames = chr[keep], ranges = IRanges(start = pmax(pos[keep], 1L), width = 1L))
+    gr$gene <- gene[keep]
+    say(sprintf("[GENES] %d genes loaded by TSS from %s.", length(gr), basename(opt$genes)))
+  } else if (length(start_col) && length(end_col)) {
+    s    <- suppressWarnings(as.integer(tab[[start_col[1]]])); e <- suppressWarnings(as.integer(tab[[end_col[1]]]))
+    keep <- !is.na(s) & !is.na(e) & !is.na(chr) & nzchar(gene)
+    gr   <- GRanges(seqnames = chr[keep],
+                    ranges = IRanges(start = pmax(pmin(s[keep], e[keep]), 1L), end = pmax(s[keep], e[keep])))
+    gr$gene <- gene[keep]
+    say(sprintf("[GENES] %d genes loaded by body (start/end) from %s.", length(gr), basename(opt$genes)))
+  } else {
+    stop("--genes: need a TSS column, or BOTH a start and an end column. Columns: ", paste(colnames(tab), collapse = ", "))
+  }
+  if (!length(gr)) stop("--genes: no usable gene rows after parsing ", basename(opt$genes))
+  gr
 }
 
 # =============================================================================
 # Batch assessment (per test): same / crossed / partial / confounded
 #   The WHOLE design must be full rank (edgeR's requirement), not just the tested
-#   coefficient; both are checked by a rank test.
+#   coefficient; both are checked by a rank test. The gate it returns affects ONLY
+#   spikein/sf (cross-batch carryover is not separable); libsize/background/
+#   greenlist are immune to it.
 # =============================================================================
 coef_estimable <- function(design, coef) {
   if (!coef %in% colnames(design)) return(FALSE)
@@ -433,188 +476,149 @@ coef_estimable <- function(design, coef) {
 
 assess_batch <- function(meta, opt) {
   if (opt$test == "contrast") {
-    d_bio   <- model.matrix(~ Group, meta)
-    tested  <- setdiff(colnames(d_bio), "(Intercept)")
+    d_bio <- model.matrix(~ Group, meta); tested <- setdiff(colnames(d_bio), "(Intercept)")
     f_batch <- ~ Batch + Group
   } else {
-    d_bio   <- model.matrix(~ Condition * Treatment, meta)
-    tested  <- grep(":", colnames(d_bio), value = TRUE)
+    d_bio <- model.matrix(~ Condition * Treatment, meta); tested <- grep(":", colnames(d_bio), value = TRUE)
     f_batch <- ~ Batch + Condition * Treatment
   }
   nb <- nlevels(droplevels(factor(meta$Batch)))
-  if (nb <= 1L)
-    return(list(status = "same", design = d_bio, tested = tested, allow_spikein = TRUE))
+  if (nb <= 1L) return(list(status = "same", design = d_bio, tested = tested, allow_spikein = TRUE))
 
   d_full <- model.matrix(f_batch, meta)
   tested_full <- if (opt$test == "contrast")
     setdiff(colnames(d_full), c("(Intercept)", grep("^Batch", colnames(d_full), value = TRUE)))
   else grep(":", colnames(d_full), value = TRUE)
-
-  # edgeR needs the WHOLE design full-rank, not just the tested coefficient.
   full_rank <- qr(d_full)$rank == ncol(d_full)
-  tested_ok <- length(tested_full) > 0 &&
-               all(vapply(tested_full, function(cf) coef_estimable(d_full, cf), logical(1)))
+  tested_ok <- length(tested_full) > 0 && all(vapply(tested_full, function(cf) coef_estimable(d_full, cf), logical(1)))
 
-  if (full_rank && tested_ok) {
-    # Batch is genuinely blockable (groups present across batches).
-    list(status = "crossed", design = d_full, tested = tested_full, allow_spikein = TRUE)
-  } else if (tested_ok) {
-    # Tested coef estimable WITH Batch, but a NON-tested nuisance coef (e.g. the
-    # Treatment main effect) is aliased with Batch -> full design rank-deficient.
-    # Drop Batch: the tested (interaction) effect is still estimable without it,
-    # and Batch held no information the fit could use for it. The aliased main
-    # effect is NOT interpretable; only the interaction is reported.
-    list(status = "partial", design = d_bio, tested = tested, allow_spikein = FALSE)
-  } else {
-    # The tested coefficient itself is aliased with Batch -> cannot be separated.
-    list(status = "confounded", design = d_bio, tested = tested, allow_spikein = FALSE)
-  }
+  if (full_rank && tested_ok)      list(status = "crossed",    design = d_full, tested = tested_full, allow_spikein = TRUE)
+  else if (tested_ok)              list(status = "partial",    design = d_bio,  tested = tested,      allow_spikein = FALSE)
+  else                             list(status = "confounded", design = d_bio,  tested = tested,      allow_spikein = FALSE)
 }
 
 # =============================================================================
 # Counting + filtering
 # =============================================================================
 make_param <- function(opt) {
-  discard <- GRanges()                       # empty (readParam's own default); NOT NULL
+  discard <- GRanges()                                  # empty == readParam default (NOT NULL)
   if (!is.null(opt$blacklist)) {
     if (!file.exists(opt$blacklist)) stop("Blacklist not found: ", opt$blacklist)
     discard <- read_bed3(opt$blacklist)
   }
-  readParam(minq = 20L, dedup = TRUE, pe = "both",
-            max.frag = opt$frag_max, discard = discard)
+  readParam(minq = 20L, dedup = TRUE, pe = "both", max.frag = opt$frag_max, discard = discard)
 }
 
+# Count reads into windows (the test units) and into background bins (for the
+# enrichment filter and the background-TMM normalization); return filtered windows.
 count_and_filter <- function(bams, opt, param, igg_bams) {
   win  <- windowCounts(bams, width = opt$window, spacing = opt$spacing, param = param)
   bins <- windowCounts(bams, bin = TRUE, width = opt$bg_bin, param = param)
-  if (!is.null(igg_bams)) {
+  if (!is.null(igg_bams)) {                              # IgG-aware filter (keep windows enriched over IgG)
     control     <- regionCounts(igg_bams, regions = rowRanges(win), param = param)
     bin.control <- windowCounts(igg_bams, bin = TRUE, width = opt$bg_bin, param = param)
     scinfo <- scaleControlFilter(bins, bin.control)
     fstat  <- filterWindowsControl(win, control, scale.info = scinfo)
     say("[FILTER] IgG-enrichment filter (filterWindowsControl).")
-  } else {
-    fstat <- filterWindowsGlobal(win, bins)
-    say("[FILTER] genomic-background enrichment filter (filterWindowsGlobal).")
+  } else {                                               # else filter over genomic background
+    fstat <- filterWindowsGlobal(win, bins); say("[FILTER] genomic-background enrichment filter (filterWindowsGlobal).")
   }
   keep <- fstat$filter > opt$min_lfc_bg
-  say(sprintf("[FILTER] kept %d / %d windows (>%.2f log2 over background).",
-              sum(keep), length(keep), opt$min_lfc_bg))
+  say(sprintf("[FILTER] kept %d / %d windows (>%.2f log2 over background).", sum(keep), length(keep), opt$min_lfc_bg))
   list(win = win[keep, ], bins = bins)
 }
 
 # =============================================================================
-# Normalization (TMM = libsize, and spike-in = RRPM)
+# Per-method normalization factors
+#   Every method returns a per-sample norm.factors vector keyed by SampleID.
+#   In edgeR the EFFECTIVE library size = lib.size * norm.factor; CPM/logFC use it.
 # =============================================================================
-norm_tmm <- function(win, bins) {
-  win <- normFactors(bins, se.out = win)            # composition/efficiency TMM
-  asDGEList(win)
-}
-set_spikein <- function(y, spikein_reads) {
-  sr <- spikein_reads[colnames(y)]                  # keyed by SampleID (= colnames(y))
-  bad <- is.na(sr) | !is.finite(sr) | sr <= 0
-  if (any(bad))
-    stop("[SPIKEIN] spike-in reads missing/invalid for: ",
-         paste(colnames(y)[bad], collapse = ", "),
-         "\n  Check that sample-sheet SampleID values match the BAM columns and that ",
-         "spikein_reads are positive finite numbers.")
-  nf <- sr / y$samples$lib.size
-  nf <- nf / exp(mean(log(nf)))                     # geometric-mean-centre to 1
-  y$samples$norm.factors <- as.numeric(nf)
-  y
-}
-set_normfactors <- function(y, sf) {
-  # Inject precomputed scaling factors (e.g. ChIPseqSpikeInFree SF) as edgeR
-  # norm.factors. Geometric-mean-centred for numerical hygiene; DE significance and
-  # the up/down balance are invariant to a global rescale, so the centring does not
-  # change the result — only the absolute CPM baseline.
-  v <- sf[colnames(y)]
-  bad <- is.na(v) | !is.finite(v) | v <= 0
-  if (any(bad))
-    stop("[NORMFACTORS] invalid factor for: ", paste(colnames(y)[bad], collapse = ", "),
-         "\n  Check the --normfactors ID column maps to these SampleIDs.")
-  v <- v / exp(mean(log(v)))
-  y$samples$norm.factors <- as.numeric(v)
-  y
+compute_nf <- function(method, y0, win, bins, green, spike_v, sf_v) {
+  cn <- colnames(y0)
+  if (method == "libsize") {
+    nf <- rep(1, ncol(y0))                               # TRUE depth-only: no composition correction
+  } else if (method == "background") {
+    nf <- asDGEList(normFactors(bins,  se.out = win))$samples$norm.factors  # TMM on genome-wide bins
+  } else if (method == "greenlist") {
+    if (is.null(green)) stop("[greenlist] requested but greenlist counts are missing.")
+    nf <- asDGEList(normFactors(green, se.out = win))$samples$norm.factors  # TMM on greenlist regions
+  } else if (method == "spikein") {
+    sr <- spike_v[cn]; nf <- sr / y0$samples$lib.size    # Orlando/RRPM: scale by exogenous reads
+    nf <- nf / exp(mean(log(nf)))                        # geometric-mean centre to 1
+  } else if (method == "sf") {
+    v <- sf_v[cn]; nf <- v / exp(mean(log(v)))           # injected ChIPseqSpikeInFree SF, centred
+  } else stop("Unknown normalization method: ", method)
+  setNames(as.numeric(nf), cn)
 }
 
 # =============================================================================
 # Fit + test + region-merge, then attach baseline / peak strata
 # =============================================================================
 fit_test_regions <- function(y, ab, opt, win_gr, peaks_gr, indep_logcpm) {
-  y   <- estimateDisp(y, ab$design)
-  fit <- glmQLFit(y, ab$design, robust = TRUE)
-  res <- glmQLFTest(fit, coef = ab$tested)          # Group coef OR interaction coef
-  wtab <- res$table                                 # per-window logFC, logCPM, PValue
+  y   <- estimateDisp(y, ab$design)                      # NB dispersion, trended + tagwise (EB-squeezed)
+  fit <- glmQLFit(y, ab$design, robust = TRUE)           # QL fit; robust = guard outlier WINDOWS
+  res <- glmQLFTest(fit, coef = ab$tested)               # QL F-test on the tested coefficient(s)
+  wtab <- res$table                                      # per-window logFC, logCPM, PValue
 
-  # reference-group baseline abundance per window (RTM-prone 'samedata')
-  if (opt$test == "contrast") {
-    ref_idx <- which(y$samples$group_role == "group2")
-  } else {
-    ref_idx <- which(y$samples$peak_ref)
-  }
+  # Reference-group baseline abundance per window (RTM-prone 'samedata' stratifier).
+  ref_idx <- if (opt$test == "contrast") which(y$samples$group_role == "group2") else which(y$samples$peak_ref)
   base_lcpm <- aveLogCPM(y$counts[, ref_idx, drop = FALSE],
-                         lib.size = y$samples$lib.size[ref_idx] *
-                                    y$samples$norm.factors[ref_idx])
+                         lib.size = y$samples$lib.size[ref_idx] * y$samples$norm.factors[ref_idx])
 
-  # merge adjacent windows into regions, combine p-values
-  merged <- mergeWindows(win_gr, tol = opt$spacing, max.width = 10000L)
-  comb   <- combineTests(merged$ids, wtab)          # PValue, FDR, direction, rep.test
+  merged <- mergeWindows(win_gr, tol = opt$spacing, max.width = 10000L)   # adjacent windows -> regions
+  comb   <- combineTests(merged$ids, wtab)               # Simes per region -> region BH FDR
   reg    <- merged$regions
 
-  # aggregate per-window stats to regions (mean over member windows)
-  agg <- function(v) as.numeric(tapply(v, merged$ids, mean))
-  reg_logFC    <- agg(wtab$logFC)
-  reg_baseline <- agg(base_lcpm)
-  reg_indep    <- if (!is.null(indep_logcpm)) agg(indep_logcpm) else rep(NA_real_, length(reg))
-
+  agg <- function(v) as.numeric(tapply(v, merged$ids, mean))  # mean over member windows
   df <- data.frame(
     chr = as.character(seqnames(reg)), start = start(reg), end = end(reg),
-    logFC = reg_logFC, logCPM = agg(wtab$logCPM),
-    PValue = comb$PValue, FDR = comb$FDR,
-    direction = comb$direction,
-    baseline_logCPM = reg_baseline,
-    baseline_indep_logCPM = reg_indep,
-    stringsAsFactors = FALSE
-  )
-  # strata (low..high) from baseline ranks
-  cut_strata <- function(x, k) {
+    logFC = agg(wtab$logFC), logCPM = agg(wtab$logCPM),
+    PValue = comb$PValue, FDR = comb$FDR, direction = comb$direction,
+    baseline_logCPM = agg(base_lcpm),
+    baseline_indep_logCPM = if (!is.null(indep_logcpm)) agg(indep_logcpm) else rep(NA_real_, length(reg)),
+    stringsAsFactors = FALSE)
+
+  cut_strata <- function(x, k) {                          # low..high strata from baseline ranks
     if (all(is.na(x))) return(factor(rep(NA, length(x))))
     br <- quantile(x, probs = seq(0, 1, length.out = k + 1), na.rm = TRUE)
     lab <- if (k == 3) c("low", "mid", "high") else paste0("s", seq_len(k))
-    cut(x, breaks = unique(br), labels = lab[seq_len(length(unique(br)) - 1)],
-        include.lowest = TRUE)
+    cut(x, breaks = unique(br), labels = lab[seq_len(length(unique(br)) - 1)], include.lowest = TRUE)
   }
   df$baseline_stratum       <- cut_strata(df$baseline_logCPM, opt$n_strata)
   df$baseline_indep_stratum <- cut_strata(df$baseline_indep_logCPM, opt$n_strata)
-  # in_peak via overlap
-  if (!is.null(peaks_gr)) {
-    df$in_peak <- overlapsAny(reg, peaks_gr)
-  } else {
-    df$in_peak <- NA
-  }
+  df$in_peak <- if (!is.null(peaks_gr)) overlapsAny(reg, peaks_gr) else NA
   list(table = df, res = res, fit = fit, y = y)
 }
 
 # =============================================================================
-# Stratified up/down balance + RTM verdict
+# Direction labels — TEST-AWARE so the interaction is never misread
+#   contrast:    +logFC = "gained" mark,   -logFC = "lost" mark.
+#   interaction: the coefficient is (UNC effect in cond_alt) - (UNC effect in
+#                cond_ref), a difference of differences. So +/- mean which
+#                condition LOSES MORE, not gained/lost mark.
+# =============================================================================
+dir_labels <- function(opt) {
+  if (opt$test == "contrast")
+    list(up = "gained", down = "lost", legend_up = "gained", legend_down = "lost")
+  else
+    list(up = sprintf("stronger loss in %s", opt$cond_ref),
+         down = sprintf("stronger loss in %s", opt$cond_alt),
+         legend_up = sprintf("more loss in %s", opt$cond_ref),
+         legend_down = sprintf("more loss in %s", opt$cond_alt))
+}
+
+# =============================================================================
+# Stratified up/down balance + RTM verdict (verdict only meaningful for contrast)
 # =============================================================================
 balance_block <- function(df, stratum_col, opt, label) {
-  sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
-  s <- df[[stratum_col]]
-  levs <- levels(factor(s))
-  say(sprintf("[STRAT:%s]", label))
-  out <- list()
-  for (L in levs) {
-    m  <- !is.na(s) & s == L
-    ms <- m & sig
-    n_up   <- sum(ms & df$logFC > 0)
-    n_dn   <- sum(ms & df$logFC < 0)
-    n_sig  <- n_up + n_dn
+  sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc; s <- df[[stratum_col]]
+  say(sprintf("[STRAT:%s]", label)); out <- list()
+  for (L in levels(factor(s))) {
+    m <- !is.na(s) & s == L; ms <- m & sig
+    n_up <- sum(ms & df$logFC > 0); n_dn <- sum(ms & df$logFC < 0); n_sig <- n_up + n_dn
     pct_dn <- if (n_sig) 100 * n_dn / n_sig else NA_real_
     say(sprintf("   %-5s n=%-6d sig=%-5d  up=%-5d down=%-5d  %%down(sig)=%s  medianLFC=%+.3f",
-                L, sum(m), n_sig, n_up, n_dn,
-                ifelse(is.na(pct_dn), "NA", sprintf("%.0f", pct_dn)),
+                L, sum(m), n_sig, n_up, n_dn, ifelse(is.na(pct_dn), "NA", sprintf("%.0f", pct_dn)),
                 median(df$logFC[m], na.rm = TRUE)))
     out[[L]] <- c(n = sum(m), sig = n_sig, up = n_up, down = n_dn, pct_down = pct_dn)
   }
@@ -623,49 +627,54 @@ balance_block <- function(df, stratum_col, opt, label) {
 
 balance_peak <- function(df, opt) {
   if (all(is.na(df$in_peak))) { say("[STRAT:peak]   (no --peaks given)"); return(NULL) }
-  sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
-  say("[STRAT:peak]")
-  out <- list()
+  sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc; say("[STRAT:peak]"); out <- list()
   for (L in c(TRUE, FALSE)) {
-    m  <- df$in_peak == L; ms <- m & sig
+    m <- df$in_peak == L; ms <- m & sig
     n_up <- sum(ms & df$logFC > 0); n_dn <- sum(ms & df$logFC < 0); n_sig <- n_up + n_dn
     pct_dn <- if (n_sig) 100 * n_dn / n_sig else NA_real_
     say(sprintf("   %-8s n=%-6d sig=%-5d  up=%-5d down=%-5d  %%down(sig)=%s  medianLFC=%+.3f",
                 ifelse(L, "in_peak", "non_peak"), sum(m), n_sig, n_up, n_dn,
-                ifelse(is.na(pct_dn), "NA", sprintf("%.0f", pct_dn)),
-                median(df$logFC[m], na.rm = TRUE)))
+                ifelse(is.na(pct_dn), "NA", sprintf("%.0f", pct_dn)), median(df$logFC[m], na.rm = TRUE)))
     out[[ifelse(L, "peak", "nonpeak")]] <- c(pct_down = pct_dn)
   }
   out
 }
 
-rtm_verdict <- function(sd_block, peak_block, indep_block) {
-  # loss gradient (samedata) = %down(high) - %down(low)
-  g <- function(b, hi, lo) {
-    if (is.null(b) || is.null(b[[hi]]) || is.null(b[[lo]])) return(NA_real_)
-    b[[hi]]["pct_down"] - b[[lo]]["pct_down"]
+# The flattening signature (loss at high-baseline peaks, spread to low) is a
+# TREATMENT concept; only emit the verdict for a contrast test.
+rtm_verdict <- function(sd_block, peak_block, indep_block, opt) {
+  if (opt$test != "contrast") {
+    say("[STRAT verdict] (interaction: flattening verdict suppressed — the coefficient is a difference of differences, not a treatment effect)")
+    return(invisible(NULL))
   }
+  g <- function(b, hi, lo) if (is.null(b) || is.null(b[[hi]]) || is.null(b[[lo]])) NA_real_ else b[[hi]]["pct_down"] - b[[lo]]["pct_down"]
   grad_sd <- g(sd_block, "high", "low")
-  grad_pk <- if (!is.null(peak_block))
-    (peak_block[["peak"]]["pct_down"] - peak_block[["nonpeak"]]["pct_down"]) else NA_real_
+  grad_pk <- if (!is.null(peak_block)) (peak_block[["peak"]]["pct_down"] - peak_block[["nonpeak"]]["pct_down"]) else NA_real_
   grad_in <- g(indep_block, "high", "low")
   say("[STRAT verdict]")
-  say(sprintf("   samedata loss-gradient (high-low %%down) = %s",
-              ifelse(is.na(grad_sd), "NA", sprintf("%+.0f", grad_sd))))
-  if (!is.na(grad_pk))
-    say(sprintf("   peak     loss-gradient (peak-nonpeak)   = %+.0f  -> %s",
-                grad_pk, ifelse(!is.na(grad_sd) && grad_pk >= 0.5 * grad_sd,
-                                "SURVIVES (flattening real)", "COLLAPSES (largely RTM)")))
-  if (!is.na(grad_in))
-    say(sprintf("   indep    loss-gradient (high-low)       = %+.0f  -> %s",
-                grad_in, ifelse(!is.na(grad_sd) && grad_in >= 0.5 * grad_sd,
-                                "SURVIVES", "weak/RTM")))
-  if (is.na(grad_pk) && is.na(grad_in))
-    say("   (no RTM-resistant stratifier supplied; samedata is RTM-prone — interpret with care)")
+  say(sprintf("   samedata loss-gradient (high-low %%down) = %s", ifelse(is.na(grad_sd), "NA", sprintf("%+.0f", grad_sd))))
+  if (!is.na(grad_pk)) say(sprintf("   peak     loss-gradient (peak-nonpeak)   = %+.0f  -> %s", grad_pk,
+                                   ifelse(!is.na(grad_sd) && grad_pk >= 0.5 * grad_sd, "SURVIVES (flattening real)", "COLLAPSES (largely RTM)")))
+  if (!is.na(grad_in)) say(sprintf("   indep    loss-gradient (high-low)       = %+.0f  -> %s", grad_in,
+                                   ifelse(!is.na(grad_sd) && grad_in >= 0.5 * grad_sd, "SURVIVES", "weak/RTM")))
+  if (is.na(grad_pk) && is.na(grad_in)) say("   (no RTM-resistant stratifier supplied; samedata is RTM-prone — interpret with care)")
 }
 
 # =============================================================================
-# Figures
+# Per-condition signal (for the normalization-comparison figure)
+#   For a given normalized y and a per-sample condition key, returns a
+#   windows x conditions matrix of mean normalized logCPM (replicates averaged).
+# =============================================================================
+condition_signal <- function(y, cond_key) {
+  lc <- cpm(y, log = TRUE)                                # per-window normalized logCPM
+  conds <- unique(cond_key)
+  m <- sapply(conds, function(cc) rowMeans(lc[, cond_key == cc, drop = FALSE]))
+  if (is.null(dim(m))) m <- matrix(m, ncol = length(conds))
+  colnames(m) <- conds; m
+}
+
+# =============================================================================
+# Standard per-method figures (MDS / MA / volcano / repcor / strata balance)
 # =============================================================================
 save_fig <- function(fn, outdir, draw, w = 6.5, h = 5) {
   for (dev in c("pdf", "png")) {
@@ -675,315 +684,472 @@ save_fig <- function(fn, outdir, draw, w = 6.5, h = 5) {
   }
 }
 
-# MDS with biological glyphs: shape = Condition, colour = Treatment (default) or
-# Batch (the confound diagnostic). Real SampleID labels; padded so nothing clips.
 mds_plot <- function(y, tag, norm, outdir, color_by = c("treat", "batch")) {
   color_by <- match.arg(color_by)
-  lc  <- cpm(y, log = TRUE)
-  mds <- suppressWarnings(plotMDS(lc, plot = FALSE))
-  xx  <- as.numeric(mds$x); yy <- as.numeric(mds$y)
-  cond  <- as.character(y$samples$cond)
-  treat <- as.character(y$samples$treat)
-  batch <- as.character(y$samples$batch)
-  ids   <- colnames(y)
-
-  conds   <- sort(unique(cond))
-  pch_map <- setNames(c(21, 24, 22, 23, 25)[seq_along(conds)], conds)
-  pchs    <- pch_map[cond]
-
-  keyvec  <- if (color_by == "treat") treat else batch
-  keys    <- sort(unique(keyvec))
-  pal     <- c("#1F6F8B", "#E08A3C", "#2A9D8F", "#B23A48", "#6D5BA6", "#9BA7B0")[seq_along(keys)]
-  col_map <- setNames(pal, keys)
-  cols    <- col_map[keyvec]
-
-  pct <- function(i) {
-    ve <- mds$var.explained
-    if (!is.null(ve) && length(ve) >= i && is.finite(ve[i]))
-      sprintf(" (%d%%)", round(100 * ve[i])) else ""
-  }
-  xr <- range(xx); yr <- range(yy)
-  xpad <- max(diff(xr) * 0.30, 0.5); ypad <- max(diff(yr) * 0.30, 0.5)
-  ttl <- sprintf("%s %s MDS  (shape=Condition, colour=%s)",
-                 tag, norm, if (color_by == "batch") "Batch" else "Treatment")
-  fn  <- paste0(tag, "_", norm, "_MDS", if (color_by == "batch") "_batch" else "")
-
+  mds <- suppressWarnings(plotMDS(cpm(y, log = TRUE), plot = FALSE))
+  xx <- as.numeric(mds$x); yy <- as.numeric(mds$y)
+  cond <- as.character(y$samples$cond); treat <- as.character(y$samples$treat); batch <- as.character(y$samples$batch)
+  ids <- colnames(y)
+  conds <- sort(unique(cond)); pch_map <- setNames(c(21,24,22,23,25)[seq_along(conds)], conds); pchs <- pch_map[cond]
+  keyvec <- if (color_by == "treat") treat else batch; keys <- sort(unique(keyvec))
+  pal <- c("#1F6F8B","#E08A3C","#2A9D8F","#B23A48","#6D5BA6","#9BA7B0")[seq_along(keys)]
+  col_map <- setNames(pal, keys); cols <- col_map[keyvec]
+  pct <- function(i) { ve <- mds$var.explained; if (!is.null(ve) && length(ve) >= i && is.finite(ve[i])) sprintf(" (%d%%)", round(100*ve[i])) else "" }
+  xr <- range(xx); yr <- range(yy); xpad <- max(diff(xr)*0.30, 0.5); ypad <- max(diff(yr)*0.30, 0.5)
+  ttl <- sprintf("%s %s MDS  (shape=Condition, colour=%s)", tag, norm, if (color_by=="batch") "Batch" else "Treatment")
+  fn <- paste0(tag, "_", norm, "_MDS", if (color_by=="batch") "_batch" else "")
   save_fig(fn, outdir, function() {
-    par(mar = c(5, 5, 4, 9), xpd = TRUE)
+    par(mar = c(5,5,4,9), xpd = TRUE)
     plot(xx, yy, pch = pchs, bg = cols, col = "grey20", cex = 2.2, lwd = 0.9,
-         xlim = c(xr[1] - xpad, xr[2] + xpad),
-         ylim = c(yr[1] - ypad, yr[2] + ypad),
-         xlab = paste0("Leading logFC dim 1", pct(1)),
-         ylab = paste0("Leading logFC dim 2", pct(2)),
-         main = ttl)
+         xlim = c(xr[1]-xpad, xr[2]+xpad), ylim = c(yr[1]-ypad, yr[2]+ypad),
+         xlab = paste0("Leading logFC dim 1", pct(1)), ylab = paste0("Leading logFC dim 2", pct(2)), main = ttl)
     text(xx, yy, labels = ids, pos = 3, offset = 0.7, cex = 0.6, col = "grey30")
-    legend("topright", inset = c(-0.30, 0), bty = "n", title = "Condition",
-           pch = unname(pch_map[conds]), pt.bg = "grey80", col = "grey20",
-           legend = conds, pt.cex = 1.5)
-    legend("bottomright", inset = c(-0.30, 0), bty = "n",
-           title = if (color_by == "batch") "Batch" else "Treatment",
-           pch = 22, pt.bg = unname(col_map[keys]), col = "grey20",
-           legend = keys, pt.cex = 1.5)
+    legend("topright", inset = c(-0.30,0), bty = "n", title = "Condition", pch = unname(pch_map[conds]),
+           pt.bg = "grey80", col = "grey20", legend = conds, pt.cex = 1.5)
+    legend("bottomright", inset = c(-0.30,0), bty = "n", title = if (color_by=="batch") "Batch" else "Treatment",
+           pch = 22, pt.bg = unname(col_map[keys]), col = "grey20", legend = keys, pt.cex = 1.5)
   }, w = 8, h = 5.5)
 }
 
 std_plots <- function(y, res, df, tag, norm, outdir, opt) {
-  # MDS: shape = Condition, colour = Treatment, plus a Batch-coloured companion.
-  mds_plot(y, tag, norm, outdir, "treat")
-  mds_plot(y, tag, norm, outdir, "batch")
+  labs <- dir_labels(opt)
+  mds_plot(y, tag, norm, outdir, "treat"); mds_plot(y, tag, norm, outdir, "batch")  # bio + batch-coloured MDS
 
-  save_fig(paste0(tag, "_", norm, "_MA"), outdir, function() {
-    plot(df$logCPM, df$logFC, pch = 16, cex = 0.3, col = "#88888855",
-         xlab = "logCPM", ylab = "logFC", main = paste(tag, norm, "MA"))
-    sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
-    points(df$logCPM[sig], df$logFC[sig], pch = 16, cex = 0.35, col = "#C0392B")
-    abline(h = 0, col = "grey40")
+  save_fig(paste0(tag, "_", norm, "_MA"), outdir, function() {                       # MA: logFC vs logCPM
+    plot(df$logCPM, df$logFC, pch = 16, cex = 0.3, col = "#88888855", xlab = "logCPM", ylab = "logFC",
+         main = paste(tag, norm, "MA")); sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
+    points(df$logCPM[sig], df$logFC[sig], pch = 16, cex = 0.35, col = "#C0392B"); abline(h = 0, col = "grey40")
   })
 
-  save_fig(paste0(tag, "_", norm, "_volcano"), outdir, function() {
+  save_fig(paste0(tag, "_", norm, "_volcano"), outdir, function() {                  # volcano with test-aware counts
     sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
-    plot(df$logFC, -log10(df$FDR), pch = 16, cex = 0.3, col = "#88888855",
-         xlab = "logFC", ylab = "-log10 FDR", main = paste(tag, norm, "volcano"))
-    points(df$logFC[sig], -log10(df$FDR[sig]), pch = 16, cex = 0.35,
-           col = ifelse(df$logFC[sig] > 0, "#C0392B", "#1F6F8B"))
+    plot(df$logFC, -log10(df$FDR), pch = 16, cex = 0.3, col = "#88888855", xlab = "logFC", ylab = "-log10 FDR",
+         main = paste(tag, norm, "volcano"))
+    points(df$logFC[sig], -log10(df$FDR[sig]), pch = 16, cex = 0.35, col = ifelse(df$logFC[sig] > 0, "#C0392B", "#1F6F8B"))
     abline(v = c(-opt$lfc, opt$lfc), h = -log10(opt$fdr), col = "grey60", lty = 2)
     n_up <- sum(sig & df$logFC > 0); n_dn <- sum(sig & df$logFC < 0)
     legend("top", horiz = TRUE, bg = "white", box.col = "grey80", cex = 0.95,
-           legend = c(sprintf("down: %d", n_dn), sprintf("up: %d", n_up)),
-           text.col = c("#1F6F8B", "#C0392B"))
+           legend = c(sprintf("%s: %d", labs$down, n_dn), sprintf("%s: %d", labs$up, n_up)), text.col = c("#1F6F8B","#C0392B"))
   })
 
-  save_fig(paste0(tag, "_", norm, "_repcor"), outdir, function() {
+  save_fig(paste0(tag, "_", norm, "_repcor"), outdir, function() {                   # replicate scatter matrix
     lc <- cpm(y, log = TRUE)
-    suppressWarnings(pairs(lc[sample(nrow(lc), min(2000, nrow(lc))), , drop = FALSE],
-                           pch = ".", main = paste(tag, norm, "rep cor")))
+    suppressWarnings(pairs(lc[sample(nrow(lc), min(2000, nrow(lc))), , drop = FALSE], pch = ".", main = paste(tag, norm, "rep cor")))
   })
 }
 
-# Strata up/down balance. Only POPULATED panels are drawn, plus a slim dedicated
-# legend cell at the far right (so the legend never overlaps the bars, and for the
-# interaction — which has no indep panel — it sits right beside the peak panel).
 strata_balance_fig <- function(df, tag, norm, outdir, opt) {
-  sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
-  has_peak  <- !all(is.na(df$in_peak))
-  has_indep <- !all(is.na(df$baseline_indep_logCPM))
-
+  labs <- dir_labels(opt); sig <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
+  has_peak <- !all(is.na(df$in_peak)); has_indep <- !all(is.na(df$baseline_indep_logCPM))
   draw_stratum <- function(strat, title) {
-    levs <- levels(factor(df[[strat]]))
-    if (!length(levs)) { plot.new(); title(main = title); return() }
+    levs <- levels(factor(df[[strat]])); if (!length(levs)) { plot.new(); title(main = title); return() }
     up <- dn <- numeric(length(levs))
-    for (i in seq_along(levs)) {
-      m <- !is.na(df[[strat]]) & df[[strat]] == levs[i] & sig
-      up[i] <- sum(m & df$logFC > 0); dn[i] <- sum(m & df$logFC < 0)
-    }
+    for (i in seq_along(levs)) { m <- !is.na(df[[strat]]) & df[[strat]] == levs[i] & sig; up[i] <- sum(m & df$logFC > 0); dn[i] <- sum(m & df$logFC < 0) }
     tot <- pmax(up + dn, 1)
-    barplot(rbind(100 * up / tot, 100 * dn / tot), names.arg = levs,
-            col = c("#E08A3C", "#2A9D8F"), ylab = "% of significant",
-            main = title, ylim = c(0, 100))
+    barplot(rbind(100*up/tot, 100*dn/tot), names.arg = levs, col = c("#E08A3C","#2A9D8F"),
+            ylab = "% of significant", main = title, ylim = c(0,100))
   }
   draw_peak <- function() {
-    lv <- c("non_peak", "in_peak"); up <- dn <- numeric(2)
-    for (i in 1:2) {
-      m <- df$in_peak == (lv[i] == "in_peak") & sig
-      up[i] <- sum(m & df$logFC > 0); dn[i] <- sum(m & df$logFC < 0)
-    }
+    if (!has_peak) { plot.new(); title(main = "peak (none)"); return() }
+    up <- dn <- numeric(2); levs <- c(TRUE, FALSE)
+    for (i in seq_along(levs)) { m <- df$in_peak == levs[i] & sig; up[i] <- sum(m & df$logFC > 0); dn[i] <- sum(m & df$logFC < 0) }
     tot <- pmax(up + dn, 1)
-    barplot(rbind(100 * up / tot, 100 * dn / tot), names.arg = lv,
-            col = c("#E08A3C", "#2A9D8F"), ylab = "% of significant",
-            main = "peak (RTM-immune)", ylim = c(0, 100))
+    barplot(rbind(100*up/tot, 100*dn/tot), names.arg = c("in_peak","non_peak"),
+            col = c("#E08A3C","#2A9D8F"), ylab = "% of significant", main = "peak (RTM-immune)", ylim = c(0,100))
+  }
+  n_panels <- 1 + as.integer(has_indep) + as.integer(has_peak)
+  draw <- function() {
+    par(mfrow = c(1, n_panels), mar = c(4,4,3,1), oma = c(0,0,2.4,0))
+    draw_stratum("baseline_stratum", "samedata baseline (RTM-prone)")
+    if (has_indep) draw_stratum("baseline_indep_stratum", "independent baseline")
+    if (has_peak)  draw_peak()
+    mtext(sprintf("%s %s  up/down composition by stratum  (orange=%s, teal=%s)", tag, norm, labs$up, labs$down),
+          side = 3, outer = TRUE, cex = 0.85)
+  }
+  save_fig(paste0(tag, "_", norm, "_strata_balance"), outdir, draw, w = max(5, 3.4*n_panels), h = 4)
+}
+
+# =============================================================================
+# Cross-method per-region logFC concordance (the RELATIVE-structure robustness
+#   check). All methods share identical windows -> identical regions in identical
+#   order, so logFC vectors align row-for-row. A tight diagonal here means the
+#   loci-level redistribution is the same regardless of the global-scale
+#   assumption; only the genome-wide offset differs between methods.
+# =============================================================================
+norm_compare_fig <- function(df_by_method, tag, outdir) {
+  methods <- names(df_by_method); if (length(methods) < 2) return(invisible(NULL))
+  ref <- if ("libsize" %in% methods) "libsize" else methods[1]
+  others <- setdiff(methods, ref)
+  draw <- function() {
+    par(mfrow = c(1, length(others)), mar = c(4,4,3,1))
+    for (m in others) {
+      x <- df_by_method[[ref]]$logFC; y <- df_by_method[[m]]$logFC
+      rng <- range(c(x, y), finite = TRUE)
+      plot(x, y, pch = 16, cex = 0.25, col = "#33333522", xlim = rng, ylim = rng,
+           xlab = sprintf("logFC (%s)", ref), ylab = sprintf("logFC (%s)", m),
+           main = sprintf("%s vs %s", m, ref))
+      abline(0, 1, col = "grey40"); abline(h = 0, v = 0, col = "grey85", lty = 3)
+      rho <- suppressWarnings(cor(x, y, method = "spearman", use = "complete.obs"))
+      legend("topleft", bty = "n", cex = 0.85, legend = sprintf("Spearman rho = %.3f", rho))
+    }
+  }
+  save_fig(paste0(tag, "_norm_compare"), outdir, draw, w = max(5, 3.2*length(others)), h = 3.8)
+}
+
+# =============================================================================
+# NEW — Normalization-comparison figures (Egan et al. 2016, Fig 5 analog)
+#   These visualize, for each normalization, HOW MUCH GLOBAL SHIFT it implies
+#   between the reference (group2) and treated (group1) conditions.
+#   READ THIS CAREFULLY: the size of the shift a method shows is a restatement
+#   of its scaling ASSUMPTION, not evidence it is correct. The figures are
+#   interpretable only when anchored:
+#     - dashed red IF line / band  = the externally measured log2FC (ground truth)
+#     - orthogonal control-mark row = a shift here too would mean the normalization
+#                                     manufactures shifts (artifact); a shift in the
+#                                     test mark but not the control = real biology.
+#   The libsize panel is annotated "(no shift by construction)".
+# =============================================================================
+.assemble_marks <- function(test_sig, ortho, mark_test, mark_ortho) {
+  marks <- list(list(name = mark_test, sig = test_sig, is_test = TRUE))
+  if (!is.null(ortho) && !is.null(ortho$signal))
+    marks <- c(marks, list(list(name = mark_ortho, sig = ortho$signal, is_test = FALSE)))
+  marks
+}
+
+# Scatter: reference signal (x) vs treated signal (y) per window, one panel per
+# method, rows = marks. Cloud below the diagonal = implied global loss.
+comparison_scatter_fig <- function(test_sig, ortho, methods, g1key, g2key, g1lab, g2lab,
+                                    mark_test, mark_ortho, reference_shift, tag, outdir) {
+  marks <- .assemble_marks(test_sig, ortho, mark_test, mark_ortho)
+  nr <- length(marks); nc <- length(methods)
+  draw <- function() {
+    par(mfrow = c(nr, nc), mar = c(4, 4, 3.5, 1), oma = c(0, 2.2, if (!is.null(reference_shift)) 2.2 else 0.5, 0))
+    for (mk in marks) for (m in methods) {
+      S <- mk$sig[[m]]
+      if (is.null(S) || !all(c(g1key, g2key) %in% colnames(S))) {       # method not computable for this mark
+        plot.new(); box(col = "grey85"); title(main = m); text(0.5, 0.5, "n/a", col = "grey60"); next
+      }
+      x <- S[, g2key]; y <- S[, g1key]; rng <- range(c(x, y), finite = TRUE)
+      plot(x, y, pch = 16, cex = 0.25, col = "#33333522", xlim = rng, ylim = rng,
+           xlab = sprintf("%s (norm logCPM)", g2lab), ylab = sprintf("%s (norm logCPM)", g1lab), main = m)
+      abline(0, 1, col = "grey40", lwd = 1.2)                            # no-change diagonal
+      if (mk$is_test && !is.null(reference_shift))
+        abline(reference_shift, 1, col = "#C0392B", lwd = 1.6, lty = 2)  # IF ground truth: y = x + log2FC
+      if (m == "libsize") mtext("(no shift by construction)", side = 3, line = 0.2, cex = 0.6, col = "grey45")
+    }
+    for (i in seq_len(nr)) mtext(marks[[i]]$name, side = 2, outer = TRUE, line = 0.5,
+                                 at = 1 - (i - 0.5)/nr, cex = 0.85, font = 2)
+    if (!is.null(reference_shift))
+      mtext(sprintf("dashed red = IF/western global log2FC = %+.2f (treated vs reference); the method whose cloud sits on this line matches the orthogonal truth",
+                    reference_shift), side = 3, outer = TRUE, line = 0.4, cex = 0.7, col = "#C0392B")
+  }
+  save_fig(paste0(tag, "_norm_comparison_scatter"), outdir, draw, w = max(5, 3.2*nc), h = max(4, 3.2*nr))
+}
+
+# Box: signal distribution per condition, one panel per method, rows = marks.
+comparison_box_fig <- function(test_sig, ortho, methods, g1key, g2key, g1lab, g2lab,
+                               mark_test, mark_ortho, reference_shift, tag, outdir) {
+  marks <- .assemble_marks(test_sig, ortho, mark_test, mark_ortho)
+  nr <- length(marks); nc <- length(methods)
+  draw <- function() {
+    par(mfrow = c(nr, nc), mar = c(6, 4, 3.5, 1), oma = c(0, 2.2, 0.5, 0))
+    for (mk in marks) for (m in methods) {
+      S <- mk$sig[[m]]
+      if (is.null(S) || !all(c(g1key, g2key) %in% colnames(S))) {
+        plot.new(); box(col = "grey85"); title(main = m); text(0.5, 0.5, "n/a", col = "grey60"); next
+      }
+      ref <- S[, g2key]; trt <- S[, g1key]
+      boxplot(list(ref, trt), names = c(g2lab, g1lab), col = c("#BFC9CA", "#E08A3C"),
+              ylab = "norm logCPM", main = m, las = 2, outline = FALSE)
+      if (mk$is_test && !is.null(reference_shift)) {                     # where treated SHOULD sit per IF
+        expct <- median(ref, na.rm = TRUE) + reference_shift
+        segments(1.6, expct, 2.4, expct, col = "#C0392B", lwd = 2, lty = 2)
+        text(2, expct, "IF", pos = 3, col = "#C0392B", cex = 0.7)
+      }
+      if (m == "libsize") mtext("(no shift by construction)", side = 3, line = 0.2, cex = 0.6, col = "grey45")
+    }
+    for (i in seq_len(nr)) mtext(marks[[i]]$name, side = 2, outer = TRUE, line = 0.5,
+                                 at = 1 - (i - 0.5)/nr, cex = 0.85, font = 2)
+  }
+  save_fig(paste0(tag, "_norm_comparison_box"), outdir, draw, w = max(5, 3.0*nc), h = max(4, 3.2*nr))
+}
+
+# =============================================================================
+# Orthogonal control-mark panel data (for the comparison figure)
+#   Counts the control mark's BAMs for the two contrast conditions, applies each
+#   DATA-DERIVED normalization (libsize / background / greenlist) recomputed from
+#   the control mark itself, plus spikein IF its spikein_reads are in the sheet.
+#   (sf is test-mark-specific and is skipped for the control mark.) Returns
+#   per-method windows x 2 condition-signal matrices, or NULL (with a notice) if
+#   the control mark's samples for both conditions are not present.
+# =============================================================================
+mark_panel_data <- function(mark_name, g1key, g2key, methods, ss, opt, param, green_gr) {
+  mk  <- tolower(trimws(mark_name))
+  sub <- ss[ss$.fac == mk, , drop = FALSE]
+  if (!nrow(sub)) { say(sprintf("[ORTHO] no samples for control mark '%s' — control row skipped.", mark_name)); return(NULL) }
+  sub$.key <- paste(sub$.cond, sub$.treat, sep = "|")
+  sub <- sub[sub$.key %in% c(g1key, g2key), , drop = FALSE]
+  n1 <- sum(sub$.key == g1key); n2 <- sum(sub$.key == g2key)
+  if (n1 < 1 || n2 < 1) {
+    say(sprintf("[ORTHO] control mark '%s' lacks samples for both contrast conditions (%s:%d, %s:%d) — control row skipped (flag accepted; nothing else affected).",
+                mark_name, g1key, n1, g2key, n2)); return(NULL)
+  }
+  if (any(!file.exists(sub$bamReads))) { say(sprintf("[ORTHO] control mark '%s' BAM(s) missing — control row skipped.", mark_name)); return(NULL) }
+  say(sprintf("[ORTHO] control mark '%s': %d samples (%s:%d, %s:%d) — building control panels.", mark_name, nrow(sub), g1key, n1, g2key, n2))
+
+  bams <- sub$bamReads
+  cf   <- count_and_filter(bams, opt, param, igg_bams = NULL)   # global-background filter for the control mark
+  win  <- cf$win; bins <- cf$bins
+  y0   <- asDGEList(win); colnames(y0) <- sub$SampleID
+  cond_key <- sub$.key
+
+  green <- if ("greenlist" %in% methods && !is.null(green_gr)) regionCounts(bams, regions = green_gr, param = param) else NULL
+
+  sv <- NULL                                                    # control-mark spike-in reads (only if present in sheet)
+  if ("spikein" %in% methods && "spikein_reads" %in% colnames(sub)) {
+    cand <- suppressWarnings(as.numeric(sub$spikein_reads)); names(cand) <- sub$SampleID
+    if (!any(is.na(cand)) && all(cand > 0)) sv <- cand
+    else say("[ORTHO] control-mark spikein_reads missing/invalid — spikein panel skipped for control mark.")
   }
 
-  panels <- list(list(kind = "stratum", col = "baseline_stratum",
-                      title = "samedata (RTM-prone)"))
-  if (has_peak)  panels <- c(panels, list(list(kind = "peak")))
-  if (has_indep) panels <- c(panels, list(list(kind = "stratum",
-                      col = "baseline_indep_stratum", title = "indep group")))
-  np <- length(panels)
-
-  save_fig(paste0(tag, "_", norm, "_strata_balance"), outdir, function() {
-    layout(matrix(1:(np + 1), nrow = 1), widths = c(rep(1, np), 0.55))
-    par(mar = c(5, 4, 4, 1))
-    for (p in panels) {
-      if (identical(p$kind, "peak")) draw_peak() else draw_stratum(p$col, p$title)
-    }
-    par(mar = c(5, 0, 4, 0)); plot.new()
-    legend("left", fill = c("#E08A3C", "#2A9D8F"),
-           legend = c("gained", "lost"), bty = "n", cex = 1.15)
-  }, w = 2.7 * (np + 0.6), h = 4)
-}
-
-norm_compare_fig <- function(df_lib, df_other, tag, norm, outdir, opt) {
-  key <- function(d) paste(d$chr, d$start, d$end)
-  m <- merge(data.frame(k = key(df_lib), lf_lib = df_lib$logFC),
-             data.frame(k = key(df_other), lf_oth = df_other$logFC), by = "k")
-  save_fig(paste0(tag, "_", norm, "_norm_compare"), outdir, function() {
-    plot(m$lf_lib, m$lf_oth, pch = 16, cex = 0.3, col = "#1F6F8B55",
-         xlab = "logFC (libsize/TMM)", ylab = sprintf("logFC (%s)", norm),
-         main = paste(tag, sprintf("libsize vs %s (per region)", norm)))
-    abline(0, 1, col = "grey40"); abline(h = 0, v = 0, col = "grey80", lty = 3)
-    off <- median(m$lf_oth - m$lf_lib, na.rm = TRUE)
-    legend("topleft", bty = "n",
-           legend = sprintf("median global shift = %+.2f log2", off))
-  })
+  out <- setNames(vector("list", length(methods)), methods)
+  for (m in methods) {
+    if (m == "sf")                       { out[[m]] <- NULL; say("[ORTHO] 'sf' is test-mark-specific — skipped for control mark."); next }
+    if (m == "spikein" && is.null(sv))   { out[[m]] <- NULL; next }
+    if (m == "greenlist" && is.null(green)) { out[[m]] <- NULL; next }
+    nf <- tryCatch(compute_nf(m, y0, win, bins, green, sv, NULL), error = function(e) { say(sprintf("[ORTHO] method '%s' failed for control mark: %s", m, conditionMessage(e))); NULL })
+    if (is.null(nf)) { out[[m]] <- NULL; next }
+    y <- y0; y$samples$norm.factors <- nf
+    out[[m]] <- condition_signal(y, cond_key)                   # windows x 2 (ref, treated)
+  }
+  list(signal = out, g1 = g1key, g2 = g2key)
 }
 
 # =============================================================================
-# Per-normalization driver
+# Write per-method region tables; return counts for the summary.
 # =============================================================================
 write_outputs <- function(df, tag, norm, outdir, opt) {
-  write.csv(df, file.path(outdir, sprintf("%s_%s_all_regions.csv", tag, norm)), row.names = FALSE)
-  sig <- df[df$FDR < opt$fdr & abs(df$logFC) > opt$lfc, , drop = FALSE]
-  write.csv(sig, file.path(outdir, sprintf("%s_%s_significant.csv", tag, norm)), row.names = FALSE)
+  labs <- dir_labels(opt)
+  df$call <- ifelse(df$FDR < opt$fdr & abs(df$logFC) > opt$lfc,
+                    ifelse(df$logFC > 0, labs$up, labs$down), "ns")    # test-aware significance label
+  all_path <- file.path(outdir, sprintf("%s_%s_all_regions.csv", tag, norm))
+  sig_path <- file.path(outdir, sprintf("%s_%s_significant.csv", tag, norm))
+  write.csv(df, all_path, row.names = FALSE)
+  sig <- df[df$call != "ns", , drop = FALSE]; sig <- sig[order(sig$FDR), , drop = FALSE]
+  write.csv(sig, sig_path, row.names = FALSE)
   n_up <- sum(sig$logFC > 0); n_dn <- sum(sig$logFC < 0)
-  say(sprintf("[%s] significant regions: %d  (up=%d, down=%d)  of %d tested",
-              norm, nrow(sig), n_up, n_dn, nrow(df)))
-  invisible(c(n_sig = nrow(sig), up = n_up, down = n_dn, total = nrow(df)))
-}
-
-run_norm <- function(y, ab, opt, win_gr, peaks_gr, indep_logcpm, tag, norm, outdir) {
-  say(sprintf("=== normalization: %s ===", norm))
-  ft <- fit_test_regions(y, ab, opt, win_gr, peaks_gr, indep_logcpm)
-  df <- ft$table
-  counts <- write_outputs(df, tag, norm, outdir, opt)
-  std_plots(ft$y, ft$res, df, tag, norm, outdir, opt)
-  strata_balance_fig(df, tag, norm, outdir, opt)
-  sd_block <- balance_block(df, "baseline_stratum", opt, "samedata")
-  pk_block <- balance_peak(df, opt)
-  in_block <- if (!all(is.na(df$baseline_indep_logCPM)))
-    balance_block(df, "baseline_indep_stratum", opt, "indep") else { say("[STRAT:indep]   (no --baseline_group given)"); NULL }
-  rtm_verdict(sd_block, pk_block, in_block)
-  list(df = df, counts = counts)
+  say(sprintf("[%s] regions: %d total, %d significant (%s=%d, %s=%d). -> %s",
+              norm, nrow(df), nrow(sig), labs$up, n_up, labs$down, n_dn, basename(sig_path)))
+  c(total = nrow(df), sig = nrow(sig), up = n_up, down = n_dn)
 }
 
 # =============================================================================
-# Main
+# Map genes to the up/down significant regions of ONE normalization and write
+#   pathway-ready gene lists (one symbol per line) into <norm outdir>/genelists/.
+#   - background_universe.txt : genes overlapping ANY tested region (the proper
+#                               ORA background for this assay/normalization).
+#   - <tag>_<norm>_<up>.txt    : genes in significant gained / "stronger loss in
+#                               cond_ref" regions (direction label is test-aware).
+#   - <tag>_<norm>_<down>.txt  : genes in significant lost / "stronger loss in
+#                               cond_alt" regions.
+#   - <tag>_<norm>_gene_assignment.csv : region->gene provenance (the pathway
+#                               script ignores any file matching 'gene_assignment').
+#   A gene maps to a region by overlap of its TSS (or body) with the region.
+# =============================================================================
+map_genes_to_regions <- function(df, genes_gr, tag, norm, outdir, opt) {
+  if (is.null(genes_gr)) return(invisible(NULL))
+  labs  <- dir_labels(opt)
+  gldir <- file.path(outdir, "genelists")
+  dir.create(gldir, showWarnings = FALSE, recursive = TRUE)
+
+  reg     <- GRanges(df$chr, IRanges(df$start, df$end))     # all tested regions (df = every region)
+  ov_all  <- findOverlaps(genes_gr, reg)
+  bg_genes <- sort(unique(genes_gr$gene[queryHits(ov_all)]))
+
+  sig    <- df$FDR < opt$fdr & abs(df$logFC) > opt$lfc
+  up_idx <- which(sig & df$logFC > 0); dn_idx <- which(sig & df$logFC < 0)
+  genes_for <- function(idx) {
+    if (!length(idx)) return(character(0))
+    sort(unique(genes_gr$gene[queryHits(findOverlaps(genes_gr, reg[idx]))]))
+  }
+  up_genes <- genes_for(up_idx); dn_genes <- genes_for(dn_idx)
+
+  up_tok <- safe_token(labs$up); dn_tok <- safe_token(labs$down)
+  writeLines(up_genes, file.path(gldir, sprintf("%s_%s_%s.txt", tag, norm, up_tok)))
+  writeLines(dn_genes, file.path(gldir, sprintf("%s_%s_%s.txt", tag, norm, dn_tok)))
+  writeLines(bg_genes, file.path(gldir, "background_universe.txt"))
+
+  if (length(ov_all)) {
+    asg <- data.frame(
+      chr   = as.character(seqnames(reg))[subjectHits(ov_all)],
+      start = start(reg)[subjectHits(ov_all)],
+      end   = end(reg)[subjectHits(ov_all)],
+      gene  = genes_gr$gene[queryHits(ov_all)],
+      stringsAsFactors = FALSE)
+    write.csv(asg, file.path(gldir, sprintf("%s_%s_gene_assignment.csv", tag, norm)), row.names = FALSE)
+  }
+  say(sprintf("[GENES:%s] %s=%d genes, %s=%d genes, background=%d genes -> %s",
+              norm, labs$up, length(up_genes), labs$down, length(dn_genes), length(bg_genes),
+              file.path(basename(outdir), "genelists")))
+  if (!length(bg_genes))
+    say("[GENES] WARNING: 0 genes overlapped any region — check chromosome naming (e.g. 'chr1' vs '1') matches your BAMs.")
+  invisible(list(up = up_genes, down = dn_genes, background = bg_genes))
+}
+
+# =============================================================================
+# Per-normalization driver: set factors -> fit/test/merge -> outputs + figures.
+#   Returns the region table, counts, the norm.factors, the effective library
+#   sizes, and (contrast only) the per-condition signal for the comparison figure.
+# =============================================================================
+run_norm <- function(method, y0, win, bins, green, spike_v, sf_v, peaks_gr, indep_logcpm,
+                      win_gr, ab, tag, outdir, opt, cond_key, genes_gr) {
+  say(sprintf("\n========== NORMALIZATION: %s ==========", method))
+  norm_dir <- file.path(outdir, method)                          # each normalization gets its own subdir
+  dir.create(norm_dir, showWarnings = FALSE, recursive = TRUE)
+  nf <- compute_nf(method, y0, win, bins, green, spike_v, sf_v)   # per-sample norm.factors
+  y  <- y0; y$samples$norm.factors <- nf                         # only the factors differ between methods
+  ftr <- fit_test_regions(y, ab, opt, win_gr, peaks_gr, indep_logcpm)
+  df  <- ftr$table; yfit <- ftr$y
+
+  counts <- write_outputs(df, tag, method, norm_dir, opt)
+  std_plots(yfit, ftr$res, df, tag, method, norm_dir, opt)
+
+  sd_block <- balance_block(df, "baseline_stratum", opt, "samedata(RTM-prone)")
+  in_block <- if (!all(is.na(df$baseline_indep_logCPM))) balance_block(df, "baseline_indep_stratum", opt, "indep") else NULL
+  pk_block <- balance_peak(df, opt)
+  strata_balance_fig(df, tag, method, norm_dir, opt)
+  rtm_verdict(sd_block, pk_block, in_block, opt)
+
+  map_genes_to_regions(df, genes_gr, tag, method, norm_dir, opt)  # no-op if --genes not given
+
+  sig <- if (opt$test == "contrast") condition_signal(yfit, cond_key) else NULL   # comparison-figure data
+  list(df = df, counts = counts, nf = nf, eff_libsize = y0$samples$lib.size * nf, signal = sig)
+}
+
+# =============================================================================
+# MAIN
 # =============================================================================
 main <- function() {
   opt <- parse_cli()
   dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 
-  # self-identifying tag: contrast encodes the actual comparison
-  tag <- if (opt$test == "contrast")
-    sprintf("%s_%s_vs_%s", opt$mark, safe_token(opt$group1), safe_token(opt$group2))
-  else
-    paste0(opt$mark, "_interaction")
+  # ---- parse + validate the requested normalization list ----
+  methods_req <- tolower(trimws(strsplit(opt$norm, ",")[[1]])); methods_req <- unique(methods_req[nzchar(methods_req)])
+  allowed <- c("libsize", "background", "greenlist", "spikein", "sf")
+  bad <- setdiff(methods_req, allowed)
+  if (length(bad)) stop("Unknown --norm token(s): ", paste(bad, collapse = ", "), ". Allowed: ", paste(allowed, collapse = ", "))
+  if ("greenlist" %in% methods_req && is.null(opt$greenlist))   stop("--norm includes 'greenlist' but --greenlist BED not given.")
+  if ("spikein"   %in% methods_req && is.null(opt$spikein))     stop("--norm includes 'spikein' but --spikein not given.")
+  if ("sf"        %in% methods_req && is.null(opt$normfactors)) stop("--norm includes 'sf' but --normfactors not given.")
 
   ss   <- load_sheet(opt$sheet)
   meta <- select_samples(ss, opt)
-  say(sprintf("[INFO] mark=%s test=%s tag=%s  %d samples:", opt$mark, opt$test, tag, nrow(meta)))
-  for (i in seq_len(nrow(meta)))
-    say(sprintf("   %-22s  %s|%s  batch=%s", meta$SampleID[i], meta$Condition[i],
-                meta$Treatment[i], meta$Batch[i]))
 
-  # ---- batch assessment (per test) ----
+  tag <- if (opt$test == "contrast")
+    sprintf("%s_%s_vs_%s", opt$mark, safe_token(opt$group1), safe_token(opt$group2))
+  else sprintf("%s_interaction", opt$mark)
+  say(sprintf("=== csa mark=%s | test=%s | tag=%s ===", opt$mark, opt$test, tag))
+  say(sprintf("[SAMPLES] %d libraries: %s", nrow(meta), paste(meta$SampleID, collapse = ", ")))
+
+  # ---- batch gate (affects spikein/sf only) ----
   ab <- assess_batch(meta, opt)
-  if (ab$status == "same") {
-    say("[BATCH same] all test samples share one batch -> no batch term; spike-in allowed.")
-  } else if (ab$status == "crossed") {
-    say("[BATCH crossed] tested effect is estimable with a full-rank Batch design -> Batch ADDED.")
-    say("               (note: spike-in is most reliable WITHIN a single batch.)")
-  } else if (ab$status == "partial") {
-    say("[BATCH partial] *** Batch aliases a NON-tested coefficient (here the Treatment main effect). ***")
-    say("               The full ~Batch+Condition*Treatment design is rank-deficient, but the tested")
-    say("               INTERACTION is estimable. Batch is DROPPED (it carried no usable information for")
-    say("               the interaction); fitting ~Condition*Treatment. The Treatment main effect is")
-    say("               CONFOUNDED with batch and is NOT interpretable -- only the interaction is reported.")
-    say("               (Within-treatment batch structure, e.g. a lone extra-batch sample, is unmodelled.)")
-    say("               Spike-in DISABLED: the interaction is a spike-in-independent relative claim;")
-    say("               any global-magnitude statement needs an orthogonal assay (western/dot blot).")
-  } else {
-    say("[BATCH CONFOUNDED] *** Batch aliases the TESTED effect. ***")
-    say("               Continuing AS IF a single batch (no batch term); results are batch-uncorrected.")
-    say("               Spike-in is DISABLED for this test (cross-batch carryover cannot be separated).")
-  }
+  say(sprintf("[BATCH] status=%s; tested coef=%s; design cols: %s",
+              ab$status, paste(ab$tested, collapse = "+"), paste(colnames(ab$design), collapse = ", ")))
 
-  # ---- resolve optional inputs ----
-  peaks_gr <- resolve_peaks(opt, meta)
+  methods <- methods_req
+  if (!ab$allow_spikein && !opt$force_norm) {
+    drop <- intersect(c("spikein", "sf"), methods)
+    if (length(drop)) say(sprintf("[BATCH] dropping %s (batch %s, not separable; override with --force_norm).", paste(drop, collapse = ","), ab$status))
+    methods <- setdiff(methods, drop)
+  } else if (!ab$allow_spikein && opt$force_norm) {
+    say("[BATCH] --force_norm: applying spikein/sf despite non-separable batch (justify with an external magnitude anchor).")
+  }
+  if (length(methods) > 1 && !"libsize" %in% methods) {
+    say("[NORM] adding 'libsize' as the assumption-free reference for the comparison figures.")
+    methods <- c("libsize", methods)
+  }
+  methods <- unique(methods)
+  say(sprintf("[NORM] methods to run: %s", paste(methods, collapse = ", ")))
+
+  # ---- resolve inputs ----
+  param    <- make_param(opt)
   igg_bams <- resolve_igg(opt, meta)
-  spike_v  <- resolve_spikein(opt, meta)
-  sf_v     <- resolve_normfactors(opt, meta)
+  peaks_gr <- resolve_peaks(opt, meta)
+  green_gr <- if ("greenlist" %in% methods) resolve_greenlist(opt) else NULL
+  spike_v  <- if ("spikein"   %in% methods) resolve_spikein(opt, meta) else NULL
+  sf_v     <- if ("sf"        %in% methods) resolve_normfactors(opt, meta) else NULL
+  genes_gr <- resolve_genes(opt)                              # optional gene annotation (NULL if --genes absent)
 
-  gate_ok     <- ab$allow_spikein || isTRUE(opt$force_norm)
-  use_spikein <- !is.null(spike_v) && gate_ok
-  use_sf      <- !is.null(sf_v)    && gate_ok
-  if (!is.null(spike_v) && !gate_ok)
-    say("[SPIKEIN] requested but DISABLED (batch not separable; pass --force_norm to override).")
-  if (!is.null(sf_v) && !gate_ok)
-    say("[NORMFACTORS] requested but DISABLED (batch not separable; pass --force_norm to override).")
-  if ((use_spikein || use_sf) && !ab$allow_spikein && isTRUE(opt$force_norm)) {
-    say("[FORCE_NORM] *** Applying supplied normalization despite a non-separable batch. ***")
-    say("            The GLOBAL magnitude is only as good as what you anchored it to (e.g.")
-    say("            ChIPseqSpikeInFree + western); it is NOT separable from batch by these data.")
-    say("            Loci-level / relative structure is the interpretable part; treat the global")
-    say("            up/down balance as externally anchored, not as proven by the sequencing.")
-  }
-
-  # ---- count + filter ----
-  param <- make_param(opt)
+  # ---- count + filter the TEST mark (shared across all normalizations) ----
   cf <- count_and_filter(meta$bamReads, opt, param, igg_bams)
-  win <- cf$win; bins <- cf$bins
-  win_gr <- rowRanges(win)
+  win <- cf$win; bins <- cf$bins; win_gr <- rowRanges(win)
+  green <- if ("greenlist" %in% methods) regionCounts(meta$bamReads, regions = green_gr, param = param) else NULL
 
-  # ---- independent baseline group counted in the SAME windows ----
+  # ---- optional independent baseline group (ranks baseline only) ----
   indep_logcpm <- NULL
   if (!is.null(opt$baseline_group)) {
-    bg <- parse_group(opt$baseline_group)
-    bgrows <- ss[ss$.fac == tolower(opt$mark) & ss$.cond == bg$cond & ss$.treat == bg$treat, , drop = FALSE]
-    if (!nrow(bgrows)) stop("--baseline_group '", opt$baseline_group, "' matched no samples.")
-    say(sprintf("[STRAT] independent baseline group '%s': %d samples.",
-                opt$baseline_group, nrow(bgrows)))
-    bgc <- regionCounts(bgrows$bamReads, regions = win_gr, param = param)
-    indep_logcpm <- aveLogCPM(assay(bgc))
+    bg <- parse_group(opt$baseline_group); bkey <- paste(bg$cond, bg$treat, sep = "|")
+    brow <- ss[ss$.fac == tolower(opt$mark) & paste(ss$.cond, ss$.treat, sep = "|") == bkey, , drop = FALSE]
+    if (!nrow(brow)) stop("--baseline_group '", opt$baseline_group, "' matched no samples.")
+    if (any(!file.exists(brow$bamReads))) stop("baseline_group BAM(s) missing.")
+    say(sprintf("[BASELINE] independent stratifier '%s': %d samples.", opt$baseline_group, nrow(brow)))
+    bc <- regionCounts(brow$bamReads, regions = win_gr, param = param)
+    indep_logcpm <- aveLogCPM(assay(bc), lib.size = bc$totals)
   }
 
-  # ---- build DGEList; name columns by SampleID and carry plotting metadata ----
-  y0 <- norm_tmm(win, bins)
-  colnames(y0)      <- meta$SampleID          # real IDs -> fixes spike-in keying + MDS labels
-  y0$samples$cond   <- meta$.cond             # for MDS shape
-  y0$samples$treat  <- meta$.treat            # for MDS colour
-  y0$samples$batch  <- as.character(meta$Batch)  # for MDS batch companion
+  # ---- base DGEList (only norm.factors differ per method) ----
+  y0 <- asDGEList(win); colnames(y0) <- meta$SampleID
+  y0$samples$cond  <- meta$.cond
+  y0$samples$treat <- meta$.treat
+  y0$samples$batch <- meta$Batch
+  if (opt$test == "contrast") { y0$samples$group_role <- meta$.role; y0$samples$peak_ref <- NA }
+  else                        { y0$samples$peak_ref <- attr(meta, "peak_ref"); y0$samples$group_role <- NA }
+  cond_key <- if (opt$test == "contrast") meta$.key else paste(meta$.cond, meta$.treat, sep = "|")
+
+  # ---- run each normalization ----
+  df_by_method <- list(); counts_by_method <- list(); nf_by_method <- list(); eff_by_method <- list(); sig_by_method <- list()
+  for (m in methods) {
+    r <- run_norm(m, y0, win, bins, green, spike_v, sf_v, peaks_gr, indep_logcpm, win_gr, ab, tag, opt$outdir, opt, cond_key, genes_gr)
+    df_by_method[[m]] <- r$df; counts_by_method[[m]] <- r$counts
+    nf_by_method[[m]] <- r$nf; eff_by_method[[m]] <- r$eff_libsize; sig_by_method[[m]] <- r$signal
+  }
+
+  # ---- cross-method per-region logFC concordance (relative-structure robustness) ----
+  norm_compare_fig(df_by_method, tag, opt$outdir)
+
+  # ---- consolidated per-sample factor table ----
+  nf_df <- data.frame(SampleID = meta$SampleID, Condition = as.character(meta$Condition),
+                      Treatment = as.character(meta$Treatment), Batch = meta$Batch,
+                      lib.size = y0$samples$lib.size, stringsAsFactors = FALSE)
+  for (m in methods) { nf_df[[paste0("nf_", m)]] <- nf_by_method[[m]]; nf_df[[paste0("efflib_", m)]] <- eff_by_method[[m]] }
+  nf_path <- file.path(opt$outdir, sprintf("%s_normfactors_used.csv", tag))
+  write.csv(nf_df, nf_path, row.names = FALSE)
+  say(sprintf("[NORMFACTORS] per-sample norm.factor + effective library size per method -> %s", basename(nf_path)))
+
+  # ---- NEW: normalization-comparison figure (contrast only) ----
   if (opt$test == "contrast") {
-    y0$samples$group <- meta$Group
-    y0$samples$group_role <- meta$.role
+    g1key <- attr(meta, "g1key"); g2key <- attr(meta, "g2key")
+    ortho <- if (!is.null(opt$orthogonal_mark))
+      mark_panel_data(opt$orthogonal_mark, g1key, g2key, methods, ss, opt, param, green_gr) else NULL
+    comparison_scatter_fig(sig_by_method, ortho, methods, g1key, g2key, opt$group1, opt$group2,
+                           opt$mark, opt$orthogonal_mark, opt$reference_shift, tag, opt$outdir)
+    comparison_box_fig(sig_by_method, ortho, methods, g1key, g2key, opt$group1, opt$group2,
+                       opt$mark, opt$orthogonal_mark, opt$reference_shift, tag, opt$outdir)
+    say("[COMPARE] normalization-comparison scatter + box written.")
+    if (is.null(opt$reference_shift))
+      say("[COMPARE] NOTE: no --reference_shift given; panels show each method's ASSUMED global shift, not a validated magnitude. Anchor with the IF log2FC for interpretability.")
   } else {
-    y0$samples$group <- factor(paste(meta$Condition, meta$Treatment, sep = "_"))
-    y0$samples$peak_ref <- attr(meta, "peak_ref")
-  }
-
-  # ---- run libsize (always) ----
-  res_lib <- run_norm(y0, ab, opt, win_gr, peaks_gr, indep_logcpm, tag, "libsize", opt$outdir)
-
-  # ---- run spike-in (if requested & allowed) ----
-  res_spk <- NULL
-  if (use_spikein) {
-    y1 <- set_spikein(y0, spike_v)
-    say("[SPIKEIN] norm.factors (spikein_reads / lib.size, centred):")
-    for (i in seq_len(ncol(y1)))
-      say(sprintf("   %-22s reads=%-12.0f nf=%.3f", colnames(y1)[i],
-                  spike_v[colnames(y1)[i]], y1$samples$norm.factors[i]))
-    res_spk <- run_norm(y1, ab, opt, win_gr, peaks_gr, indep_logcpm, tag, "spikein", opt$outdir)
-    norm_compare_fig(res_lib$df, res_spk$df, tag, "spikein", opt$outdir, opt)
-    say("[COMPARE] libsize vs spike-in: loci-level structure should agree; a global")
-    say("          up/down shift is the spike-in correction (see *_spikein_norm_compare).")
-  }
-
-  # ---- run precomputed scaling factors (ChIPseqSpikeInFree etc.) if requested & allowed ----
-  res_sf <- NULL
-  if (use_sf) {
-    y2 <- set_normfactors(y0, sf_v)
-    say("[NORMFACTORS] norm.factors (supplied scaling factors, geo-mean-centred):")
-    for (i in seq_len(ncol(y2)))
-      say(sprintf("   %-22s SF=%-10.4f nf=%.3f", colnames(y2)[i],
-                  sf_v[colnames(y2)[i]], y2$samples$norm.factors[i]))
-    res_sf <- run_norm(y2, ab, opt, win_gr, peaks_gr, indep_logcpm, tag, "sf", opt$outdir)
-    norm_compare_fig(res_lib$df, res_sf$df, tag, "sf", opt$outdir, opt)
-    say("[COMPARE] libsize vs sf: loci-level structure should agree; the global up/down shift")
-    say("          is the supplied (e.g. ChIPseqSpikeInFree) correction (see *_sf_norm_compare).")
+    say("[COMPARE] normalization-comparison figure is contrast-only; skipped for interaction. Rerun --test contrast (e.g. --group1 'B10|UNC' --group2 'B10|none') to compare global-shift recovery.")
   }
 
   # ---- summary report ----
-  writeLines(log_lines$txt, file.path(opt$outdir, paste0(tag, "_summary.txt")))
-  say(sprintf("[DONE] outputs in %s", normalizePath(opt$outdir)))
+  summ <- file.path(opt$outdir, sprintf("%s_summary.txt", tag))
+  hdr <- c(strrep("=", 72), sprintf("csaummary | %s", tag), strrep("=", 72), "",
+           sprintf("Significant region counts per normalization (FDR<%.2g, |logFC|>%.2g):", opt$fdr, opt$lfc))
+  rows <- vapply(methods, function(m) { cc <- counts_by_method[[m]]
+    sprintf("  %-12s total=%-7d sig=%-6d up=%-6d down=%-6d", m, cc["total"], cc["sig"], cc["up"], cc["down"]) }, character(1))
+  writeLines(c(hdr, rows, "", "--- full run log ---", log_lines$txt), summ)
+  say(sprintf("\n[DONE] summary -> %s", summ))
 }
 
 main()

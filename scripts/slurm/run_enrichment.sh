@@ -19,10 +19,17 @@ source $ANACONDA3_SH
 conda activate multiomics-r
 
 Rscript scripts/analysis/pathway_enrichment.R \
-    --genelists results/exploratory/reversal/genelists \
-    --background results/exploratory/reversal/genelists/background_universe.txt \
-    --databases PRC2 --focal migration_specific_reversal \
-    --max_gs 2000 --pvalue 1 --qvalue 1 \
-    --outdir results/exploratory/enrichment_prc2_big
+    --genelists results/exploratory/diff_analysis/csaw/Migrated_Parunc/spikein/genelists \
+    --background results/exploratory/diff_analysis/csaw/Migrated_Parunc/spikein/genelists/background_universe.txt \
+    --databases GO_BP,Reactome,Hallmark,PRC2 \
+    --max_gs 2000 \
+    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc/spikein/genelists/enrichment
+
+Rscript scripts/analysis/pathway_enrichment.R \
+    --genelists results/exploratory/diff_analysis/csaw/Migrated_B10unc/spikein/genelists \
+    --background results/exploratory/diff_analysis/csaw/Migrated_B10unc/spikein/genelists/background_universe.txt \
+    --databases GO_BP,Reactome,Hallmark,PRC2 \
+    --max_gs 2000 \
+    --outdir results/exploratory/diff_analysis/csaw/Migrated_B10unc/spikein/genelists/enrichment
 
 conda deactivate

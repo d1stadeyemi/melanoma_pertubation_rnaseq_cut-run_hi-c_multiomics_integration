@@ -11,6 +11,10 @@ GOAL — the integrative payoff
         marks, and B->A (activated) bins the reverse?
     4b  In switching bins, do mark-change and expression-change move
         concordantly?  (the three-way association figure)
+    4c  NEW. Per-GENE concordant extremes: within switching bins, rank the
+        individual genes whose own expression change is strongest AND points
+        the same way as the bin's mark change. Two files per mark (activating /
+        repressing concordance) sorted so the TOP ROW is the most extreme gene.
 
   Frame as ASSOCIATION, not causation. All of this is observational (both
   conditions measured post-migration); the causal arm is the UNC/EZH2i
@@ -28,10 +32,16 @@ GOAL — the integrative payoff
   This separation is the whole reason Step 4 is split into 4a (bin) and 4b
   (bin-aggregated). A reviewer will check exactly this.
 
+  Step 4c does NOT compute any inferential statistic across genes — it only
+  RANKS genes for inspection/selection. It is explicitly descriptive: each
+  gene keeps its own expression LFC/padj (per-gene, legitimate) and inherits
+  its bin's mark change (shared). No p-value is derived from the gene ranking,
+  so the pseudoreplication rule is not violated — nothing is being tested.
+
 INPUTS
   --step1      Step1_bin_gene_density.txt        (coordinate + switch_cat)
   --cutrun     250kb CUT&RUN table               (coordinate + log2ratio_p-b10_<mark>_mean)
-  --step3      Step3_gene_expression_joined.txt   (per-gene lfc; OPTIONAL, enables 4b)
+  --step3      Step3_gene_expression_joined.txt   (per-gene lfc; OPTIONAL, enables 4b + 4c)
 
 OUTPUTS (into --outdir)
   Step4a_markchange_by_switch.pdf/png     per-mark violin of bin mark-change by category
@@ -40,6 +50,8 @@ OUTPUTS (into --outdir)
                                           vs mean expression-change, one dot per bin
   Step4b_bin_integrated.txt               (if --step3) per-bin: switch_cat, each mark
                                           change, mean gene expression change, n_genes
+  extreme_genes/<mark>_concordant_activating.txt   (if --step3) per-gene ranked, top=most extreme
+  extreme_genes/<mark>_concordant_repressing.txt   (if --step3) per-gene ranked, top=most extreme
 
 USAGE
   python gene_compartment_step4_markchange.py \
@@ -87,6 +99,17 @@ SWITCH_LABELS = {"B_to_A": "B\u2192A (Activated)", "A_to_B": "A\u2192B (Silenced
 CAT_ORDER = ["Stable_A", "A_to_B", "B_to_A", "Stable_B"]
 DEFAULT_MARKS = ("H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3")
 
+# Biological direction of each mark, used by Step 4c to ORIENT concordance so
+# that "activating concordance" always sorts into one file regardless of mark.
+#   active     mark  -> goes UP with activation   (sign +1)
+#   repressive mark  -> goes DOWN with activation  (sign -1)
+# An ACTIVATING concordant gene = (oriented mark change > 0) AND (expression up).
+MARK_ROLE = {
+    "h3k27me3": "repressive", "h3k9me3": "repressive", "h3k27me2": "repressive",
+    "h3k27ac": "active", "h3k4me1": "active", "h3k4me3": "active",
+    "h3k36me3": "active", "h3k4me2": "active",
+}
+
 
 def cliffs_delta_fast(x, y):
     """Cliff's delta of x vs y. Positive => x tends to EXCEED y. (Correct sign.)"""
@@ -121,6 +144,25 @@ def _bracket(ax, x1, x2, y, label, lw=1.0, fs=8):
     ax.text((x1 + x2) / 2, y + dy * 1.2, label, ha="center", va="bottom", fontsize=fs)
 
 
+def _find_col(cols, candidates):
+    """Return the first column in `cols` matching any candidate (case-insensitive)."""
+    lc = {c.lower(): c for c in cols}
+    for cand in candidates:
+        if cand.lower() in lc:
+            return lc[cand.lower()]
+    return None
+
+
+def _mark_sign(mark):
+    """(+1, 'active') or (-1, 'repressive'); default active for unknown marks."""
+    role = MARK_ROLE.get(mark.lower())
+    if role is None:
+        print(f"  [WARN] mark '{mark}' role unknown; treating as ACTIVE "
+              f"(+change = activating). Edit MARK_ROLE if this is wrong.")
+        role = "active"
+    return (+1.0 if role == "active" else -1.0), role
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Step 4: histone-mark change overlay (bin-level + integrative).")
@@ -129,7 +171,7 @@ def parse_args():
     p.add_argument("--cutrun", required=True,
                    help="250kb CUT&RUN table with log2ratio_p-b10_<mark>_mean columns.")
     p.add_argument("--step3", default=None,
-                   help="Step3_gene_expression_joined.txt (enables 4b integrative view).")
+                   help="Step3_gene_expression_joined.txt (enables 4b + 4c gene views).")
     p.add_argument("--outdir", default="results/exploratory/gene_compartment")
     p.add_argument("--coord_col", default="coordinate",
                    help="Shared coordinate column in step1 [default %default].")
@@ -138,7 +180,11 @@ def parse_args():
                         "'coordinate' else 'extra_1'.")
     p.add_argument("--marks", nargs="+", default=list(DEFAULT_MARKS),
                    help="Marks to test (default: H3K27me3 H3K27Ac H3K4me1 H3K9me3).")
-    p.add_argument("--gene_name_col", default="gene_name")
+    p.add_argument("--gene_name_col", default="gene_name",
+                   help="Gene-name column in step3 (auto-falls back if absent).")
+    p.add_argument("--extreme_all_bins", action="store_true",
+                   help="Step 4c: rank genes across ALL bins, not just switching "
+                        "bins (default: switching bins only, matching the 4b plot).")
     p.add_argument("--zscore", action="store_true",
                    help="Z-score each mark's change before plotting so all "
                         "panels share a comparable spread (use only if a shared "
@@ -267,13 +313,12 @@ def step4a(bins, mark_cols, outdir, zscore=False):
                                   "stars": _p_to_stars(p_pair)})
             all_stats.extend(pair_rows)
 
-            # brackets anchored to the TOP of the shared window (closest pairs lowest)
+            # brackets anchored to the TOP of the shared window; farthest-apart
+            # pairs drawn on top so longer brackets don't cross shorter ones.
             cat_pos = {c: i + 1 for i, c in enumerate(cats)}
             sig = list(pair_rows)   # show ALL pairs; non-significant print as "ns"
             sig.sort(key=lambda r: abs(cat_pos[r["group1"]] - cat_pos[r["group2"]]))
             if sig:
-                # farthest-apart pairs on top so longer brackets don't cross shorter ones
-                sig.sort(key=lambda r: abs(cat_pos[r["group1"]] - cat_pos[r["group2"]]))
                 tick = span * 0.12                       # span from Pass-1
                 base_y = yhi + 0.35 * span                # start just above the data
                 for k, r in enumerate(sig):
@@ -313,7 +358,7 @@ def step4a(bins, mark_cols, outdir, zscore=False):
 # =============================================================================
 # 4b — three-way integrative: per switching bin, mark-change vs mean expression
 # =============================================================================
-def step4b(bins, mark_cols, step3_path, outdir, coord_col, gene_name_col):
+def step4b(bins, mark_cols, step3_path, outdir, coord_col):
     """For SWITCHING bins, relate each mark's change to the mean expression
     change of the genes in that bin. Aggregating genes to a per-bin mean keeps
     the unit consistent with the bin-level mark value (no pseudoreplication)."""
@@ -384,6 +429,145 @@ def step4b(bins, mark_cols, step3_path, outdir, coord_col, gene_name_col):
     print(f"  Saved -> {os.path.join(outdir, 'Step4b_bin_integrated.txt')}")
 
 
+# =============================================================================
+# 4c — per-GENE concordant extremes  (descriptive ranking, NOT a test)
+# =============================================================================
+def step4c_extreme_genes(bins, mark_cols, step3_path, outdir, coord_col,
+                         gene_name_col, all_bins=False, top_print=3):
+    """Rank individual genes whose OWN expression change is large and CONCORDANT
+    with their bin's mark change. For each mark, two files are written:
+
+      <mark>_concordant_activating.txt   oriented mark change > 0  AND  expr up
+      <mark>_concordant_repressing.txt   oriented mark change < 0  AND  expr down
+
+    'Oriented' applies the mark's biological direction (MARK_ROLE) so the
+    activating corner is the same file for active and repressive marks alike:
+      - H3K27me3 (repressive): activating = mark DOWN + expr UP   (plot top-left)
+      - H3K27Ac  (active):     activating = mark UP   + expr UP   (plot top-right)
+
+    Ranking is by EXTREMITY = z(mark change) + z(expression), so a gene must be
+    extreme on BOTH axes to reach the top (a huge LFC with a tiny mark change
+    will not dominate). Larger 'extremity' = more extreme; TOP ROW = most
+    extreme, so picking the first two rows gives the two most pronounced genes.
+
+    This is descriptive selection only — no statistic is computed across genes,
+    so the bin-level pseudoreplication rule (Steps 4a/4b) is not engaged. Each
+    gene's own per-gene padj/LFC are carried through unchanged for downstream use.
+    """
+    print("[INFO] Step 4c: ranking per-GENE concordant extremes (descriptive)...")
+    g = pd.read_csv(step3_path, sep="\t", low_memory=False)
+
+    gname = gene_name_col if gene_name_col in g.columns else _find_col(
+        g.columns, ["gene_name", "gene", "symbol", "gene_symbol", "gene_id"])
+    lfc_col = _find_col(g.columns, ["lfc", "log2FoldChange", "logFC", "log2fc"])
+    padj_col = _find_col(g.columns, ["padj", "p_adj", "padjust", "fdr",
+                                     "q_value", "qvalue", "adj.P.Val"])
+    pval_col = _find_col(g.columns, ["pvalue", "p_value", "pval", "PValue", "P.Value"])
+    if coord_col not in g.columns or lfc_col is None:
+        print(f"  [WARN] Step3 lacks '{coord_col}' or an LFC column; skipping 4c.")
+        return
+    if gname is None:
+        print("  [WARN] no gene-name column found in step3; using row index.")
+        g = g.copy(); g["_gene_name_"] = g.index.astype(str); gname = "_gene_name_"
+
+    # one row per bin: coordinate, switch_cat, each mark change
+    bcols = [coord_col, "switch_cat"] + list(mark_cols.values())
+    bcols = [c for c in bcols if c in bins.columns]
+    bsub = bins[bcols].drop_duplicates(subset=coord_col)
+
+    # Step3 is a JOINED table and may already carry switch_cat and/or mark
+    # columns. If so, merging would suffix them (switch_cat_x/_y) and break the
+    # lookups below. Drop anything the bin table is about to supply (except the
+    # join key) so the bin-level values are the ones that survive — unambiguous.
+    supplied = [c for c in bsub.columns if c != coord_col]
+    g = g.drop(columns=[c for c in supplied if c in g.columns], errors="ignore")
+
+    merged = g.merge(bsub, on=coord_col, how="inner")
+    if not all_bins:
+        merged = merged[merged["switch_cat"].isin(["A_to_B", "B_to_A"])].copy()
+    if len(merged) == 0:
+        print("  [WARN] no genes joined to (switching) bins; skipping 4c.")
+        return
+
+    ex_dir = os.path.join(outdir, "extreme_genes")
+    os.makedirs(ex_dir, exist_ok=True)
+    scope = "all bins" if all_bins else "switching bins (A<->B)"
+    print(f"  [INFO] gene pool: {len(merged):,} gene rows over {scope}")
+
+    def _z(v):
+        s = float(np.std(v))
+        return (v - float(np.mean(v))) / s if s > 0 else np.zeros_like(v, dtype=float)
+
+    base_cols = [gname, coord_col, "switch_cat", "mark_change", lfc_col]
+    if padj_col: base_cols.append(padj_col)
+    if pval_col: base_cols.append(pval_col)
+    base_cols += ["mark_role", "concordance", "z_markchange", "z_expr",
+                  "concordance_product", "extremity",
+                  "n_marks_same_dir", "other_marks_same_dir", "n_marks_opposite_dir"]
+
+    # --- PASS 1: build each (mark, direction) ranked list, and tally which marks
+    # list each gene in each direction. A gene switched ON should lose repressive
+    # marks AND gain active marks, so a coherent hit appears in the SAME direction
+    # ('activating') across several marks. Counting per direction makes that the
+    # signal; appearance in the OPPOSITE direction flags a cross-mark conflict.
+    lists = {}                                  # (mark, tag) -> sorted DataFrame
+    membership = {"activating": {}, "repressing": {}}   # tag -> {gene -> set(marks)}
+    for mark, col in mark_cols.items():
+        sign, role = _mark_sign(mark)
+        sub = merged.dropna(subset=[col, lfc_col]).copy()
+        if len(sub) < 5:
+            print(f"  [WARN] {mark}: <5 genes with values; skipping.")
+            continue
+
+        oriented = sign * sub[col].to_numpy(dtype=float)   # >0 = activating direction
+        expr = sub[lfc_col].to_numpy(dtype=float)
+        sub["mark_change"] = sub[col].to_numpy(dtype=float)
+        sub["oriented_mark_change"] = oriented
+        sub["mark_role"] = role
+        sub["z_markchange"] = _z(oriented)
+        sub["z_expr"] = _z(expr)
+        sub["concordance_product"] = oriented * expr       # >0 when concordant
+
+        for tag, mask in (("activating", (oriented > 0) & (expr > 0)),
+                          ("repressing", (oriented < 0) & (expr < 0))):
+            df = sub.loc[mask].copy()
+            df["concordance"] = tag
+            # extremity: larger = more extreme, so TOP ROW is the most extreme.
+            if tag == "activating":
+                df["extremity"] = df["z_markchange"] + df["z_expr"]
+            else:  # both negative; flip sign so "more extreme" is larger
+                df["extremity"] = -(df["z_markchange"] + df["z_expr"])
+            df = df.sort_values("extremity", ascending=False)
+            lists[(mark, tag)] = df
+            for gn in df[gname].unique():            # set() dedups multi-bin genes
+                membership[tag].setdefault(gn, set()).add(mark)
+
+    # --- PASS 2: annotate with cross-mark counts and write ----------------------
+    for (mark, tag), df in lists.items():
+        same = membership[tag]
+        opp = membership["repressing" if tag == "activating" else "activating"]
+        df["n_marks_same_dir"] = df[gname].map(lambda g: len(same.get(g, ())))
+        df["other_marks_same_dir"] = df[gname].map(
+            lambda g: ",".join(sorted(m for m in same.get(g, ()) if m != mark)))
+        df["n_marks_opposite_dir"] = df[gname].map(lambda g: len(opp.get(g, ())))
+
+        cols = [c for c in base_cols if c in df.columns]
+        path = os.path.join(ex_dir, f"{mark}_concordant_{tag}.txt")
+        df[cols].to_csv(path, sep="\t", index=False)
+        print(f"  Saved -> {path}  ({len(df)} genes)")
+        if len(df):
+            head = df[[gname, "mark_change", lfc_col, "extremity",
+                       "n_marks_same_dir"]].head(top_print)
+            print(head.to_string(index=False))
+
+    print(f"  Extreme-gene files in -> {ex_dir}")
+    print("  [NOTE] n_marks_same_dir = how many of the marks list this gene as a "
+          "concordant hit in the SAME direction (4 = all marks agree it is "
+          "activated/repressed). other_marks_same_dir names them. "
+          "n_marks_opposite_dir > 0 flags a gene sending conflicting signals "
+          "across marks.")
+
+
 def main():
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
@@ -426,15 +610,18 @@ def main():
 
     if args.step3:
         print("\n[INFO] === Step 4b: mark change vs expression (integrative) ===")
-        step4b(bins, mark_cols, args.step3, args.outdir, cc, args.gene_name_col)
+        step4b(bins, mark_cols, args.step3, args.outdir, cc)
+        print("\n[INFO] === Step 4c: per-gene concordant extremes ===")
+        step4c_extreme_genes(bins, mark_cols, args.step3, args.outdir, cc,
+                             args.gene_name_col, all_bins=args.extreme_all_bins)
     else:
-        print("\n[INFO] --step3 not provided; skipping 4b integrative view. "
-              "Provide Step3_gene_expression_joined.txt to enable it.")
+        print("\n[INFO] --step3 not provided; skipping 4b/4c. "
+              "Provide Step3_gene_expression_joined.txt to enable them.")
 
-    print("\n[INFO] Step 4 complete. This is the integrative figure set: 4a shows "
-          "mark dynamics differ by switch category (bin-level, no "
-          "pseudoreplication); 4b shows mark-change tracks expression-change in "
-          "switching bins. Frame as ASSOCIATION; causal arm is UNC.")
+    print("\n[INFO] Step 4 complete. 4a: mark dynamics differ by switch category "
+          "(bin-level, no pseudoreplication); 4b: mark-change tracks "
+          "expression-change in switching bins; 4c: per-gene concordant extremes "
+          "ranked for selection (descriptive). Frame as ASSOCIATION; causal arm is UNC.")
 
 
 if __name__ == "__main__":
