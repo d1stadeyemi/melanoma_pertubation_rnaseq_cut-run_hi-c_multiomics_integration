@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=chipseqspikeinfree_chronic
+#SBATCH --job-name=chipseqspikeinfree_epz
 #SBATCH -A ACF-UTK0009
 #SBATCH --partition=condo-rmccord
 #SBATCH --qos=condo
@@ -22,7 +22,7 @@ Rscript scripts/preprocessing/run_chipseqspikeinfree.R \
     --sheet  data/processed/sample_sheet.csv \
     --mark Chronic \
     --treatment dmso,unc \
-    --outdir data/processed/spikefree/H3K27Me3_chronic \
+    --outdir data/processed/spikefree/epz \
     --blacklist data/processed/greenlist/hg19-blacklist.v2.bed --qc 
 #    --reference Parental-H3K27me3-R3 \
 
