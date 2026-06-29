@@ -161,7 +161,7 @@ read_one_list <- function(path) {
 read_genelists <- function(spec) {
   if (dir.exists(spec)) {
     files <- list.files(spec, pattern = "\\.txt$", full.names = TRUE)
-    files <- files[!grepl("background|gene_assignment", basename(files), ignore.case = TRUE)]
+    files <- files[!grepl("background_universe|gene_assignment", basename(files), ignore.case = TRUE)]
   } else {
     files <- trimws(strsplit(spec, ",")[[1]])
   }

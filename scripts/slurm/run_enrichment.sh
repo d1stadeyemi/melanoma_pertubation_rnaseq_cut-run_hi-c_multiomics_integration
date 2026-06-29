@@ -5,7 +5,7 @@
 #SBATCH --qos=condo
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=06:00:00
 #SBATCH --output=logs/enrichment_%j.out
 #SBATCH --error=logs/enrichment_%j.err
@@ -21,15 +21,13 @@ conda activate multiomics-r
 Rscript scripts/analysis/pathway_enrichment.R \
     --genelists results/exploratory/diff_analysis/csaw/Migrated_Parunc/spikein/genelists \
     --background results/exploratory/diff_analysis/csaw/Migrated_Parunc/spikein/genelists/background_universe.txt \
-    --databases GO_BP,Reactome,Hallmark,PRC2 \
-    --max_gs 2000 \
-    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc/spikein/genelists/enrichment
+    --databases GO_BP,Reactome,Hallmark,PRC2 --max_gs 2000 \
+    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc/spikein/genelists_enrichment
 
 Rscript scripts/analysis/pathway_enrichment.R \
-    --genelists results/exploratory/diff_analysis/csaw/Migrated_B10unc/spikein/genelists \
-    --background results/exploratory/diff_analysis/csaw/Migrated_B10unc/spikein/genelists/background_universe.txt \
-    --databases GO_BP,Reactome,Hallmark,PRC2 \
-    --max_gs 2000 \
-    --outdir results/exploratory/diff_analysis/csaw/Migrated_B10unc/spikein/genelists/enrichment
+    --genelists results/exploratory/diff_analysis/csaw/Migrated_B10unc/background/genelists \
+    --background results/exploratory/diff_analysis/csaw/Migrated_B10unc/background/genelists/background_universe.txt \
+    --databases GO_BP,Reactome,Hallmark,PRC2 --max_gs 2000 \
+    --outdir results/exploratory/diff_analysis/csaw/Migrated_B10unc/background/genelists_enrichment
 
 conda deactivate

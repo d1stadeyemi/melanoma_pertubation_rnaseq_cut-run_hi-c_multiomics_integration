@@ -330,22 +330,45 @@ qc_artifact_check <- function(prefix, sm, mark, opt) {
     raw <- read_table_fast(raw_path)
     cn  <- colnames(raw)
 
-    # locate coordinate columns (defensive: fall back to first three columns)
+    # ChIPseqSpikeInFree rawCounts encodes the bin as ONE packed column named
+    # 'bin' (e.g. "chr1:1-1000"), followed by per-sample count columns. Other
+    # layouts may instead carry separate chr/start/end columns. Support both.
+    # NOTE: ChIPseqSpikeInFree bins are 1-based (NOT BED), so no +1 shift here;
+    # only the blacklist BED below gets the 0-based -> 1-based +1.
     pick <- function(opts) { h <- cn[tolower(cn) %in% opts]; if (length(h)) h[1] else NA_character_ }
     chr_col <- pick(c("chr","seqnames","chrom","chromosome"))
     sta_col <- pick(c("start"))
     end_col <- pick(c("end","stop"))
-    if (any(is.na(c(chr_col, sta_col, end_col)))) {
-      message("[WARN] could not name coord columns in rawCounts; assuming first 3 are chr,start,end.")
-      chr_col <- cn[1]; sta_col <- cn[2]; end_col <- cn[3]
+    bin_col <- pick(c("bin","coord","coordinate","region","interval"))
+
+    if (!is.na(chr_col) && !is.na(sta_col) && !is.na(end_col)) {
+      coord <- data.frame(seqnames = as.character(raw[[chr_col]]),
+                          start = suppressWarnings(as.integer(raw[[sta_col]])),
+                          end   = suppressWarnings(as.integer(raw[[end_col]])),
+                          stringsAsFactors = FALSE)
+      samp_cols <- setdiff(cn, c(chr_col, sta_col, end_col))
+    } else {
+      if (is.na(bin_col)) bin_col <- cn[1]            # packed coordinate is the first column
+      bs  <- as.character(raw[[bin_col]])
+      pat <- "^(.+):([0-9]+)-([0-9]+)$"               # "chr:start-end"
+      ok  <- grepl(pat, bs)
+      coord <- data.frame(
+        seqnames = ifelse(ok, sub(pat, "\\1", bs), NA_character_),
+        start    = suppressWarnings(as.integer(ifelse(ok, sub(pat, "\\2", bs), NA))),
+        end      = suppressWarnings(as.integer(ifelse(ok, sub(pat, "\\3", bs), NA))),
+        stringsAsFactors = FALSE)
+      samp_cols <- setdiff(cn, bin_col)
+      if (!all(ok))
+        message("[INFO] --qc: ", sum(!ok), "/", length(ok),
+                " rawCounts bins did not match 'chr:start-end'; excluded from overlap.")
     }
-    samp_cols <- setdiff(cn, c(chr_col, sta_col, end_col))
     # keep only sample columns that map to this mark's BAMs
     want <- basename(sm$bamReads)
     keep <- samp_cols[basename(samp_cols) %in% want | samp_cols %in% want]
     if (!length(keep)) { message("[WARN] no rawCounts sample columns matched this mark; skipping --qc."); return(invisible(NULL)) }
 
-    # optional blacklist overlap
+    # optional blacklist overlap. bl_hit is full-length (aligned with raw rows);
+    # unparseable/invalid bins are FALSE rather than erroring the GRanges build.
     bl_hit <- NULL
     if (!is.null(opt$blacklist)) {
       if (!requireNamespace("GenomicRanges", quietly = TRUE))
@@ -354,11 +377,13 @@ qc_artifact_check <- function(prefix, sm, mark, opt) {
       bl <- read.table(opt$blacklist, header = FALSE, sep = "\t", stringsAsFactors = FALSE)
       bl_gr <- GenomicRanges::makeGRangesFromDataFrame(
         data.frame(seqnames = bl[[1]], start = bl[[2]] + 1L, end = bl[[3]]))  # BED is 0-based
-      bins_gr <- GenomicRanges::makeGRangesFromDataFrame(
-        data.frame(seqnames = raw[[chr_col]],
-                   start = as.integer(raw[[sta_col]]) + 1L,
-                   end   = as.integer(raw[[end_col]])))
-      bl_hit <- IRanges::overlapsAny(bins_gr, bl_gr)
+      valid <- !is.na(coord$seqnames) & !is.na(coord$start) & !is.na(coord$end) &
+               (coord$end >= coord$start)
+      bl_hit <- logical(nrow(raw))
+      if (any(valid)) {
+        bins_gr <- GenomicRanges::makeGRangesFromDataFrame(coord[valid, , drop = FALSE])
+        bl_hit[valid] <- IRanges::overlapsAny(bins_gr, bl_gr)
+      }
     }
 
     rows <- lapply(keep, function(s) {
