@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# csaw.R (v8) — Window-based differential binding for BROAD histone marks
+# csaw.R — Window-based differential binding for BROAD histone marks
 # =============================================================================
 # PROJECT: A375 melanoma parental-vs-B10 constricted-migration multi-omics.
 #
@@ -51,13 +51,13 @@
 # USAGE EXAMPLES
 # -----------------------------------------------------------------------------
 # 0) See every flag and its allowed values:
-#      Rscript csaw_v8.R --help
+#      Rscript csaw.R --help
 #
 # 1) The headline Parental UNC-vs-DMSO run (multi-size, group-aware, all norms,
 #    spike-in + ChIPseqSpikeInFree factors, peaks for the RTM-immune stratifier,
 #    independent B10|DMSO baseline, log2(3) enrichment filter), now with the new
 #    condition scatter + fragment QC:
-#      Rscript csaw_v8.R \
+#      Rscript csaw.R \
 #        --sheet samples.csv --mark H3K27me3 --test contrast \
 #        --group1 "Parental|UNC" --group2 "Parental|DMSO" \
 #        --norm libsize,background,spikein,sf \
@@ -65,7 +65,7 @@
 #        --window 1000,2000,5000 --filter_mode group_aware --min_lfc_bg 1.585 \
 #        --peaks sheet --baseline_group "B10|DMSO" \
 #        --genes hg19_genes.tsv --fragment_qc \
-#        --outdir results/exploratory/diff_analysis/csaw_v8/Migrated_Parunc_3FC
+#        --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_3FC
 #
 #    -> spikein/sf significant tables label the positive class "resistant" (not
 #       "gained"); <tag>_<norm>_condition_scatter.{pdf,png} shows lost (blue, below
@@ -85,20 +85,20 @@
 #
 # 4) Single-size robustness check (clean 2 kb only; compare direction + peak-
 #    stratified loss against the multi-size headline):
-#      Rscript csaw_v8.R --sheet samples.csv --mark H3K27me3 \
+#      Rscript csaw.R --sheet samples.csv --mark H3K27me3 \
 #        --group1 "Parental|UNC" --group2 "Parental|DMSO" \
 #        --norm background --window 2000 --filter_mode group_aware --min_lfc_bg 1.585 \
 #        --peaks sheet --outdir results/exploratory/.../parunc_2kb_only
 #
 # 5) Interaction test (state x treatment; e.g. does UNC act differently in B10):
-#      Rscript csaw_v8.R --sheet samples.csv --mark H3K27me3 --test interaction \
+#      Rscript csaw.R --sheet samples.csv --mark H3K27me3 --test interaction \
 #        --cond_ref Parental --cond_alt B10 --treat_ref DMSO --treat_alt UNC \
 #        --norm libsize,background --window 1000,2000,5000 --filter_mode group_aware \
 #        --outdir results/exploratory/.../interaction
 #    (condition scatter is contrast-only; it is skipped for interaction.)
 #
 # 6) Load the functions WITHOUT running anything (e.g. to unit-test on ISAAC):
-#      R> source("csaw_v8.R")   # main() does NOT fire when sourced
+#      R> source("csaw.R")   # main() does NOT fire when sourced
 #      R> dir_labels(list(test="contrast"), "spikein")$up   # "resistant"
 # =============================================================================
 
@@ -163,7 +163,7 @@ parse_cli <- function() {
                 help = "Min log2 enrichment over background/IgG to KEEP a window. [default log2(3)=1.585]"),
     make_option("--fdr", type = "double", default = 0.05,
                 help = "FDR cutoff for the significant subset. [default %default]"),
-    make_option("--lfc", type = "double", default = 0.5,
+    make_option("--lfc", type = "double", default = 0.585,
                 help = "Min |log2FC| for the significant subset. [default %default]"),
     make_option("--n_strata", type = "integer", default = 3L,
                 help = "Number of baseline-abundance strata (>=2). [default %default]"),
@@ -780,7 +780,7 @@ strata_balance_fig <- function(df, tag, norm, outdir, opt) {
 }
 
 # =============================================================================
-# NEW (v8) — correlation scatter plots, significant regions coloured
+# NEW — correlation scatter plots, significant regions coloured
 # =============================================================================
 # Two related views, both at the REGION level (so colouring lines up exactly with
 # the differential calls), using this method's NORMALIZED per-sample logCPM:
@@ -831,16 +831,18 @@ correlation_scatter_fig <- function(df, region_sample_lcpm, meta, opt, tag, norm
     xg2 <- rowMeans(region_sample_lcpm[, g2c, drop = FALSE])
     yg1 <- rowMeans(region_sample_lcpm[, g1c, drop = FALSE])
     save_fig(sprintf("%s_%s_condition_scatter", tag, norm), outdir, function() {
-      par(mar = c(4.5, 4.5, 3.8, 1))
+      par(mar = c(4.5, 4.5, 4.0, 1))
       draw_scatter(xg2, yg1,
                    xlab = sprintf("%s   mean norm logCPM", opt$group2),
                    ylab = sprintf("%s   mean norm logCPM", opt$group1),
-                   main = sprintf("%s %s  condition scatter", tag, norm),
+                   main = "",
                    shift = opt$reference_shift)
+      title(main = sprintf("%s  %s", tag, norm), cex.main = 0.9)
+      mtext("condition scatter", side = 3, line = 0.3, cex = 0.68, col = "grey35")
       if (!is.null(opt$reference_shift))
         mtext(sprintf("dashed = IF/western global log2FC = %+.2f (treated vs reference)", opt$reference_shift),
-              side = 3, line = 0.2, cex = 0.65, col = "#7B241C")
-    }, w = 6, h = 5.8)
+              side = 3, line = -0.9, cex = 0.62, col = "#7B241C")
+    }, w = 6.5, h = 6)
   } else {
     say(sprintf("[SCATTER:%s] condition scatter skipped (need >=1 sample per group).", norm))
   }
@@ -922,12 +924,13 @@ normfactor_diagnostics_fig <- function(nf_df, methods, group_key, tag, outdir) {
     par(mfrow = c(1, 2), mar = c(9, 4.5, 3.6, 1), oma = c(2.8, 0, 2.0, 0))
     n <- nrow(nf_df); xx <- seq_len(n)
     yr <- range(unlist(nf_df[paste0("nf_", methods)]), na.rm = TRUE)
-    plot(NA, xlim = c(1, n), ylim = yr, xaxt = "n", xlab = "", ylab = "norm.factor", main = "per-sample norm.factor")
+    ypad <- 0.08 * diff(yr); if (!is.finite(ypad) || ypad == 0) ypad <- 0.5
+    plot(NA, xlim = c(1, n), ylim = c(yr[1] - ypad, yr[2] + ypad), xaxt = "n", xlab = "", ylab = "norm.factor", main = "per-sample norm.factor")
     axis(1, at = xx, labels = nf_df$SampleID, las = 2, cex.axis = 0.62)
     abline(h = 1, col = "grey70", lty = 3)
     for (m in methods) { lines(xx, nf_df[[paste0("nf_", m)]], col = nm[m], lwd = 2); points(xx, nf_df[[paste0("nf_", m)]], pch = 19, col = nm[m]) }
     legend("topleft", bty = "n", legend = methods, col = nm, lwd = 2, cex = 0.8)
-    bp <- barplot(cvs, col = nm, ylab = "mean within-group CV of effective lib",
+    bp <- barplot(cvs, col = nm, ylab = "within-group CV (eff lib)",
                   main = "replicate scaling spread", las = 2, ylim = c(0, max(cvs, na.rm = TRUE) * 1.25 + 1e-6))
     text(bp, cvs, labels = sprintf("%.3f", cvs), pos = 3, cex = 0.8)
     # caption goes in the OUTER bottom margin so it never overprints the rotated axis labels
@@ -951,11 +954,11 @@ dispersion_compare_fig <- function(disp_by_method, tag, outdir) {
   rep_pdf <- sapply(methods, function(m) disp_by_method[[m]]$prior_df[1])
   pal <- c("#1F6F8B","#E08A3C","#2A9D8F","#B23A48","#6D5BA6")[seq_along(methods)]
   draw <- function() {
-    par(mfrow = c(1, 2), mar = c(7, 4.5, 3.6, 1), oma = c(0, 0, 2.0, 0))
+    par(mfrow = c(1, 2), mar = c(7, 5.8, 3.6, 1), oma = c(0, 0, 2.0, 0))
     bp <- barplot(rep_bcv, col = pal, las = 2, ylab = "common BCV (sqrt dispersion)",
                   main = "dispersion by normalization", ylim = c(0, max(rep_bcv, na.rm = TRUE) * 1.25 + 1e-6))
     text(bp, rep_bcv, labels = sprintf("%.3f", rep_bcv), pos = 3, cex = 0.8)
-    bp2 <- barplot(rep_pdf, col = pal, las = 2, ylab = "QL prior df (robust median)",
+    bp2 <- barplot(rep_pdf, col = pal, las = 2, ylab = "QL prior df (median)",
                    main = "QL prior df by normalization", ylim = c(0, max(rep_pdf, na.rm = TRUE, 1) * 1.25))
     text(bp2, rep_pdf, labels = sprintf("%.1f", rep_pdf), pos = 3, cex = 0.8)
     mtext(sprintf("%s  higher BCV under a normalization = it scatters replicates = it flattens the volcano", tag),
@@ -995,7 +998,7 @@ bcv_plot <- function(y, tag, norm, outdir) {
 }
 
 # =============================================================================
-# NEW (v8) — FRAGMENT / DUPLICATION QC (exposes the hidden readParam behaviour)
+# NEW — FRAGMENT / DUPLICATION QC (exposes the hidden readParam behaviour)
 # =============================================================================
 # readParam(dedup=TRUE, max.frag=opt$frag_max, pe="both", minq=20) silently:
 #   (i)   discards PCR/optical duplicates,
@@ -1088,17 +1091,22 @@ fragment_qc <- function(meta, bins, param, opt, tag, outdir) {
     fr <- sweep(comp, 2, pmax(denom, 1), "/")
     rownames(fr)[1] <- "used (2x pairs)"
     palc <- c("#2A9D8F", "#E08A3C", "#B23A48", "#6D5BA6", "#9AA0A6")[seq_len(nrow(fr))]
-    barplot(fr, col = palc, names.arg = ids, las = 2, cex.names = 0.6, ylim = c(0, 1),
+    barplot(fr, col = palc, names.arg = ids, las = 2, cex.names = 0.6, ylim = c(0, 1.32),
             ylab = "fraction of total reads", main = "read fate (getPESizes)")
-    legend("topright", bty = "n", cex = 0.7, fill = palc, legend = rownames(fr))
-    # (B) duplication rate
+    legend("topright", bty = "o", bg = "white", box.col = "grey80", cex = 0.62, fill = palc, legend = rownames(fr))
+    # (B) duplication rate. When BAMs are pre-deduplicated upstream every rate is ~0;
+    # floor the axis at 0.05 so it never collapses to a 1e-06 scientific-notation scale,
+    # and annotate the pre-dedup case rather than drawing a misleading empty panel.
     if (all(is.na(dup_rate))) {
       plot.new(); title(main = "duplication rate"); text(0.5, 0.5, "n/a", col = "grey60")
     } else {
+      ymax <- max(0.05, max(dup_rate, na.rm = TRUE) * 1.25)
       bp <- barplot(dup_rate, col = "#1F6F8B", names.arg = ids, las = 2, cex.names = 0.6,
-                    ylab = "duplication rate (1 - dedup/total)", main = "duplication rate",
-                    ylim = c(0, max(dup_rate, na.rm = TRUE) * 1.25 + 1e-6))
+                    ylab = "duplication rate", main = "duplication rate", ylim = c(0, ymax))
       text(bp, dup_rate, labels = sprintf("%.0f%%", 100 * dup_rate), pos = 3, cex = 0.7)
+      if (max(dup_rate, na.rm = TRUE) < 1e-4)
+        mtext("all ~0 -> BAMs already deduplicated upstream (csaw dedup is a no-op)",
+              side = 3, line = -1.2, cex = 0.6, col = "grey35")
     }
     mtext(sprintf("%s   read-fate + duplication QC", tag), side = 3, outer = TRUE, cex = 0.9, font = 2)
   }
@@ -1516,6 +1524,6 @@ main <- function() {
   say(sprintf("\n[DONE] summary -> %s", summ))
 }
 
-# Run main() only when invoked as a script (Rscript csaw_v8.R ...), NOT when the
+# Run main() only when invoked as a script (Rscript csaw.R ...), NOT when the
 # file is source()'d (e.g. to unit-test individual functions on the cluster).
 if (sys.nframe() == 0L) main()
