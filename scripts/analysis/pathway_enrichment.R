@@ -158,12 +158,19 @@ read_one_list <- function(path) {
   unique(v)
 }
 
-read_genelists <- function(spec) {
+read_genelists <- function(spec, background = NULL) {
   if (dir.exists(spec)) {
     files <- list.files(spec, pattern = "\\.txt$", full.names = TRUE)
+    # name-based drop of the obvious auxiliary files (cheap belt-and-suspenders)
     files <- files[!grepl("background_universe|gene_assignment", basename(files), ignore.case = TRUE)]
   } else {
     files <- trimws(strsplit(spec, ",")[[1]])
+  }
+  # exact-match drop of the background-universe file, independent of its name, so
+  # it is never treated as a query list even if renamed or passed in a comma list
+  if (!is.null(background) && nzchar(background)) {
+    bg_abs <- normalizePath(background, mustWork = FALSE)
+    files  <- files[normalizePath(files, mustWork = FALSE) != bg_abs]
   }
   miss <- files[!file.exists(files)]
   if (length(miss)) stop("Gene-list file(s) not found: ", paste(miss, collapse = ", "))
@@ -313,7 +320,7 @@ main <- function() {
   opt <- parse_cli()
   dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 
-  lists_sym <- read_genelists(opt$genelists)
+  lists_sym <- read_genelists(opt$genelists, opt$background)
   say(sprintf("[INFO] %d gene lists: %s", length(lists_sym),
               paste(names(lists_sym), collapse = ", ")))
 
