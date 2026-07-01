@@ -16,7 +16,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8          
 #SBATCH --mem=64G                  
-#SBATCH --time=04:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/enrich_parunc_%j.out
 #SBATCH --error=logs/enrich_parunc_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
@@ -53,7 +53,7 @@ Rscript "$SCRIPT" \
   --mode region \
   --regions   "$CSAW/migrated_ParentalUNC_vs_ParentalDMSO_spikein_significant.csv" \
   --background "$CSAW/migrated_ParentalUNC_vs_ParentalDMSO_spikein_all_regions.csv" \
-  --select "lost=call:lost,gained=call:resistant" \
+  --select "lost=call:lost,resistant=call:resistant" \
   --genome hg19 --locusdef nearest_tss \
   --databases GO_BP,Reactome,Hallmark,KEGG,PRC2 \
   --qc_plots --randomization bylength --cores 8 \

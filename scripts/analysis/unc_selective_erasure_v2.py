@@ -362,7 +362,7 @@ def plot_ecdf(panels, value_desc, outpath):
     except Exception as e: print(f"[warn] ECDF plot failed: {e}")
 
 
-def plot_violin(panels, value_desc, outpath, show_box=True):
+def plot_violin(panels, value_desc, outpath, show_box=True, cell_tag=""):
     try:
         usable=[p for p in panels if len(np.asarray(p["values"],float)[np.isfinite(np.asarray(p["values"],float))])>=2]
         if len(usable)<2: print("[warn] violin: <2 usable panels, skipping"); return
@@ -398,7 +398,9 @@ def plot_violin(panels, value_desc, outpath, show_box=True):
         ax.set_xticks(pos)
         ax.set_xticklabels([f"{p['label']}\n(n={p.get('n',len(c))})" for p,c in zip(usable,clean)], fontsize=12)
         ax.set_ylim(lo-0.12*rng, hi+0.40*rng); ax.set_ylabel(value_desc)
-        ax.set_title("UNC H3K27me3 effect by reprogrammed set\n(below 0 = depletion; * = perm p vs stable; δ = Cliff's effect size)")
+        ttl = "UNC H3K27me3 effect by reprogrammed set"
+        if cell_tag: ttl = f"{ttl}   [{cell_tag}]"
+        ax.set_title(ttl + "\n(below 0 = depletion; * = perm p vs stable; δ = Cliff's effect size)")
         fig.savefig(outpath, dpi=150); plt.close(fig)
     except Exception as e: print(f"[warn] violin plot failed: {e}")
 
@@ -790,25 +792,42 @@ def main(args):
     results.to_csv(results_path, sep="\t", index=False)
 
     lookup={(r["cell_line"],r["target_set"]):r for _,r in results.iterrows()}
-    value_desc="dUNC  =  log2(UNC / none)   [B10]"
-    def _panel(label, mask, cat, set_name, ref=False):
+
+    # Panels for ONE arm. Each arm uses its own dUNC column and looks up its own
+    # stats. Reverter sets exist only for B10 (reversion is defined on the B10
+    # DMSO->UNC axis), so the Parental arm omits them by construction.
+    def _panel(label, mask, cat, set_name, cell, value_col, ref=False):
         mask=np.asarray(mask,bool); n=int(mask.sum())
         if not ref and n<args.min_plot_n: return None
-        row=lookup.get(("B10",set_name)) if set_name else None
+        row=lookup.get((cell,set_name)) if set_name else None
         return {"label":label,"color":CAT_COLORS[cat],"ref":ref,"n":n,
-                "values":master.loc[mask,"dUNC_b10"].dropna().values,
+                "values":master.loc[mask,value_col].dropna().values,
                 "delta":(row["cliffs_delta"] if row is not None else np.nan),
                 "p":(row["perm_p_two_sided"] if row is not None else np.nan)}
-    panels=[p for p in [_panel("stable",stab,"stable",None,ref=True),
-                        _panel("A→B switch",atb,"switcher","switchers_A_to_B"),
-                        _panel("B→A switch",bta,"switcher","switchers_B_to_A"),
-                        _panel("A→B revert",rev_atb,"reverter","reverters_A_to_B"),
-                        _panel("B→A revert",rev_bta,"reverter","reverters_B_to_A")] if p is not None]
+
+    # --- B10 arm: switchers + reverters + optional gainers ---
+    panels_b10=[p for p in [_panel("stable",stab,"stable",None,"B10","dUNC_b10",ref=True),
+                        _panel("A→B switch",atb,"switcher","switchers_A_to_B","B10","dUNC_b10"),
+                        _panel("B→A switch",bta,"switcher","switchers_B_to_A","B10","dUNC_b10"),
+                        _panel("A→B revert",rev_atb,"reverter","reverters_A_to_B","B10","dUNC_b10"),
+                        _panel("B→A revert",rev_bta,"reverter","reverters_B_to_A","B10","dUNC_b10")] if p is not None]
     if args.plot_gainers:
-        g=_panel("gainer",gain,"gainer","H3K27me3_gainers")
-        if g is not None: panels.append(g)
-    plot_ecdf(panels, value_desc, os.path.join(args.outdir,"ecdf_dUNC_b10.png"))
-    plot_violin(panels, value_desc, os.path.join(args.outdir,"violin_dUNC_b10.png"))
+        g=_panel("gainer",gain,"gainer","H3K27me3_gainers","B10","dUNC_b10")
+        if g is not None: panels_b10.append(g)
+    vdesc_b10="dUNC  =  log2(UNC / none)   [B10]"
+    plot_ecdf(panels_b10, vdesc_b10, os.path.join(args.outdir,"ecdf_dUNC_b10.png"))
+    plot_violin(panels_b10, vdesc_b10, os.path.join(args.outdir,"violin_dUNC_b10.png"), cell_tag="B10")
+
+    # --- Parental arm (migration-naive control): switchers + optional gainers, NO reverters ---
+    panels_par=[p for p in [_panel("stable",stab,"stable",None,"Parental","dUNC_parental",ref=True),
+                        _panel("A→B switch",atb,"switcher","switchers_A_to_B","Parental","dUNC_parental"),
+                        _panel("B→A switch",bta,"switcher","switchers_B_to_A","Parental","dUNC_parental")] if p is not None]
+    if args.plot_gainers:
+        g=_panel("gainer",gain,"gainer","H3K27me3_gainers","Parental","dUNC_parental")
+        if g is not None: panels_par.append(g)
+    vdesc_par="dUNC  =  log2(UNC / none)   [Parental]"
+    plot_violin(panels_par, vdesc_par, os.path.join(args.outdir,"violin_dUNC_parental.png"), cell_tag="Parental")
+
     plot_balance(master, sw, "baseline_b10", "switchers", os.path.join(args.outdir,"balance_switchers.png"))
     plot_forest(results, os.path.join(args.outdir,"forest_effect_sizes.png"))
 

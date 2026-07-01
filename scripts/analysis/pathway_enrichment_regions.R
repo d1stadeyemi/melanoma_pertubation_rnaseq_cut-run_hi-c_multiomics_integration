@@ -1,16 +1,15 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# region_pathway_enrichment.R
+# pathway_enrichment_regions.R
 #   Pathway / functional enrichment for GENOMIC REGIONS, with the statistically
 #   appropriate method chosen per input type.
 # =============================================================================
 #
-# PROJECT: A375 melanoma parental-vs-B10 constricted-migration multi-omics.
+# PROJECT: A375 melanoma parental-vs-Bottom constricted-migration multi-omics.
 #
-# WHY TWO MODES (this is the whole point) -------------------------------------
-#   You feed this script genomic regions, not pre-made gene lists, and the two
-#   kinds of region you analyse have DIFFERENT statistical hazards, so they are
-#   tested with different primary methods:
+# WHY THREE MODES (this is the whole point) -----------------------------------
+#   You feed this script genomic regions OR a gene table, and each data type has
+#   DIFFERENT statistical hazards, so they are tested with different methods:
 #
 #   --mode region  : CUT&RUN H3K27me3 DIFFERENTIALLY-BOUND regions (broad).
 #       Hazard 1: gene-locus-LENGTH bias — long loci collect peaks by chance
@@ -31,6 +30,17 @@
 #           -> optional --collapse_adjacent merges contiguous switched bins into
 #           one "domain" so a single event is not counted many times.
 #       PRIMARY METHOD: clusterProfiler ORA with the bin-restricted universe.
+#
+#   --mode gene    : RNA-seq DEGs from a DESeq2 results table (gene-level).
+#       No coordinates — these are genes with log2FoldChange + padj. Two tests:
+#       ORA  : threshold DEGs (padj<deg_padj & |log2FC|>deg_lfc), split UP/DOWN,
+#              tested against the genes DESeq2 actually evaluated (non-NA padj) —
+#              the correct background, NOT the genome (Wijesooriya 2022).
+#       GSEA : rank ALL genes by the Wald stat (or log2FC) — no arbitrary cutoff;
+#              usually the more appropriate primary for DEGs (Subramanian 2005).
+#       Same GO/Reactome/Hallmark/KEGG blocks + Ben-Porath PRC2 control. LOLA is
+#       skipped (genes have no coordinates).
+#       PRIMARY METHOD: clusterProfiler ORA (up/down) + GSEA.
 #
 # SHARED ACROSS MODES ---------------------------------------------------------
 #   * Database blocks: GO_BP, Reactome, Hallmark (+ optional KEGG).
@@ -121,11 +131,22 @@
 #       --outdir results/exploratory/enrichment_compartment
 #       # universe = ALL rows of Reversal_classified.txt (every callable bin)
 #
-#   # 3) Add KEGG (optional; live API in bin mode, built-in set in region mode):
+#   # 3) Add KEGG (your compute node has internet, so enrichKEGG works live):
 #   Rscript region_pathway_enrichment.R ... --databases GO_BP,Reactome,Hallmark,PRC2,KEGG ...
 #
-#   # 4) Add the LOLA region-overlap companion (runs together, same inputs):
-#   Rscript region_pathway_enrichment.R ... --lola_db /lustre/.../LOLACore/hg19 ...
+#   # 4) Full run — every database INCLUDING KEGG, plus the LOLA companion:
+#   Rscript region_pathway_enrichment.R \
+#       --mode region \
+#       --regions   .../migrated_..._significant.csv \
+#       --background .../migrated_..._all_regions.csv \
+#       --select "lost=call:lost,gained=call:gained" \
+#       --genome hg19 --locusdef nearest_tss \
+#       --databases GO_BP,Reactome,Hallmark,KEGG,PRC2 \
+#       --qc_plots --randomization bylength --cores 8 \
+#       --lola_db /lustre/.../refs/LOLACore/hg19 \
+#       --outdir results/exploratory/enrichment_h3k27me3
+#       # (KEGG tables are free to publish with a citation; only embedding a
+#       #  rendered KEGG MAP image needs KEGG's free copyright form.)
 #
 # COLUMN / FORMAT NOTES -------------------------------------------------------
 #   * Files may be tab OR comma, quoted OR unquoted, header OR not.
@@ -133,6 +154,18 @@
 #     --chr_col/--start_col/--end_col), else by POSITION (cols 1-3). This is why
 #     Reversal_classified.txt works even though col 1 is 'coordinate' (chr/start/
 #     end are named cols 2-4), and csaw's quoted "chr","start","end" works too.
+#
+#   # 5) RNA-seq DEGs from a DESeq2 results table (ORA up/down + GSEA):
+#   Rscript region_pathway_enrichment.R \
+#       --mode gene \
+#       --regions results/exploratory/rnaseq/deseq2_B10_vs_Parental.csv \
+#       --id_type auto --lfc_col log2FoldChange --padj_col padj \
+#       --deg_padj 0.05 --deg_lfc 1 --deg_analysis both --rank_by stat \
+#       --databases GO_BP,Reactome,Hallmark,KEGG,PRC2 \
+#       --outdir results/exploratory/enrichment_rnaseq
+#       # gene IDs are read from the table's ROW NAMES (DESeq2 default); if yours
+#       # sit in a column, add --gene_col <name>. --id_type auto detects
+#       # Ensembl/Entrez/Symbol. No --genome/--background/--lola_db needed here.
 #
 # OUTPUTS (into --outdir) -----------------------------------------------------
 #   region mode:
@@ -148,8 +181,12 @@
 #     lola_region_overlap_results.csv        full Fisher overlap table (all tracks)
 #     lola_polycomb_overlap.csv              EZH2/SUZ12/EED/H3K27me3 hits (control)
 #     lola_top_enrichments.{pdf,png}         top reference tracks per set
+#   gene mode:
+#     ora_<db>_DEG.csv  + ora_<db>_DEG_dotplot.{pdf,png}     (up vs down ORA)
+#     gsea_<db>_DEG.csv + gsea_<db>_DEG_dotplot/_ridge.{pdf,png}   (ranked GSEA)
 #   both:
 #     positive_control_PRC2.csv              Ben-Porath FDR per set (QC)
+#     run_diagnostics.csv + Fig_diagnostics_setsizes.{pdf,png}
 #     enrichment_summary.txt                 settings, mapping stats, caveats
 # =============================================================================
 
@@ -203,6 +240,8 @@ parse_cli <- function() {
       help = "[region mode] chipenrich locus definition. Common: nearest_tss | nearest_gene | 5kb | 10kb | exon | intron. 'nearest_tss' tiles the genome so every region is assigned. [default %default]"),
     make_option("--qc_plots", action = "store_true", default = FALSE,
       help = "[region mode] write Broad-Enrich QC plots (dist-to-TSS, gene coverage). Inspect these for genic/intergenic balance."),
+    make_option("--keep_overlaps", action = "store_true", default = FALSE,
+      help = "[region mode] do NOT merge overlapping/adjacent input regions. By default they ARE merged (GenomicRanges::reduce), because Broad-Enrich assumes disjoint regions and warns otherwise."),
     make_option("--randomization", type = "character", default = "NULL",
       help = "[region mode] Type-I-error check. ALLOWED: NULL | complete | bylength. 'bylength' preserves the locus-length relationship. [default %default]"),
     make_option("--cores", type = "integer", default = 1L,
@@ -215,6 +254,26 @@ parse_cli <- function() {
       help = "[bin mode] how a gene is assigned to a bin. ALLOWED: tss (gene's TSS falls in the bin; one gene -> one bin) | body (any overlap of gene body). [default %default]"),
     make_option("--focal", type = "character", default = NULL,
       help = "[bin mode] set name used for the single-set emap/cnet figures. [default: auto — a set matching 'migration_specific', else the first]."),
+
+    # --- gene mode (DESeq2 DEGs) ---
+    make_option("--gene_col", type = "character", default = NULL,
+      help = "[gene mode] column holding gene IDs. [default: use the table's row names, as DESeq2 writes them]."),
+    make_option("--id_type", type = "character", default = "auto",
+      help = "[gene mode] gene ID type. ALLOWED: auto | SYMBOL | ENSEMBL | ENTREZID. 'auto' = ENSG*->ENSEMBL, all-digits->ENTREZID, else SYMBOL. [default %default]"),
+    make_option("--lfc_col", type = "character", default = "log2FoldChange",
+      help = "[gene mode] log2 fold-change column (DESeq2). [default %default]"),
+    make_option("--padj_col", type = "character", default = "padj",
+      help = "[gene mode] adjusted-p column (DESeq2). Genes with non-NA padj define the tested-gene background. [default %default]"),
+    make_option("--stat_col", type = "character", default = "stat",
+      help = "[gene mode] Wald/LRT statistic column, used for GSEA ranking if present. [default %default]"),
+    make_option("--deg_padj", type = "double", default = 0.05,
+      help = "[gene mode] padj threshold that DEFINES a DEG for ORA. [default %default]"),
+    make_option("--deg_lfc", type = "double", default = 0,
+      help = "[gene mode] |log2FC| threshold that DEFINES a DEG for ORA. [default %default]"),
+    make_option("--deg_analysis", type = "character", default = "both",
+      help = "[gene mode] which test(s) to run. ALLOWED: ora | gsea | both. [default %default]"),
+    make_option("--rank_by", type = "character", default = "auto",
+      help = "[gene mode] GSEA ranking metric. ALLOWED: auto | stat | log2fc | signed_p. 'auto' = stat if present else log2fc. [default %default]"),
 
     # --- LOLA region-overlap companion (optional; both modes) ---
     make_option("--lola_db", type = "character", default = NULL,
@@ -244,16 +303,24 @@ parse_cli <- function() {
   )
   opt <- parse_args(OptionParser(option_list = ol))
 
-  # normalise friendly mode aliases -> canonical {region, bin}
-  if (is.null(opt$mode)) stop("--mode is required (region/cutrun/histone OR bin/compartment/hic).")
+  # normalise friendly mode aliases -> canonical {region, bin, gene}
+  if (is.null(opt$mode)) stop("--mode is required (region/cutrun/histone OR bin/compartment/hic OR gene/deg/rnaseq).")
   m <- tolower(opt$mode)
   opt$mode <- if (m %in% c("region", "cutrun", "cut&run", "histone", "mark", "marks")) "region"
               else if (m %in% c("bin", "bins", "compartment", "compartments", "hic", "hi-c")) "bin"
-              else stop("--mode '", opt$mode, "' not recognised. Use region/cutrun/histone or bin/compartment/hic.")
+              else if (m %in% c("gene", "genes", "deg", "degs", "rnaseq", "rna-seq", "deseq2")) "gene"
+              else stop("--mode '", opt$mode, "' not recognised. Use region/cutrun/histone, bin/compartment/hic, or gene/deg/rnaseq.")
 
-  if (is.null(opt$regions)) stop("--regions is required.")
+  if (is.null(opt$regions)) stop("--regions is required (in gene mode this is the DESeq2 results table).")
   if (!opt$genome %in% c("hg19", "hg38")) stop("--genome must be hg19 or hg38.")
   if (!opt$sep %in% c("auto", "comma", "tab", "ws")) stop("--sep must be auto, comma, tab or ws.")
+  if (opt$mode == "gene") {
+    if (!toupper(opt$id_type) %in% c("AUTO", "SYMBOL", "ENSEMBL", "ENTREZID"))
+      stop("--id_type must be auto, SYMBOL, ENSEMBL or ENTREZID.")
+    if (!opt$deg_analysis %in% c("ora", "gsea", "both")) stop("--deg_analysis must be ora, gsea or both.")
+    if (!opt$rank_by %in% c("auto", "stat", "log2fc", "signed_p")) stop("--rank_by must be auto, stat, log2fc or signed_p.")
+    if (!is.null(opt$lola_db)) message("[NOTE] --lola_db is ignored in gene mode (genes have no coordinates).")
+  }
   if (opt$mode == "bin" && is.null(opt$background) && is.null(opt$select))
     stop("--mode bin needs the callable-bin universe: pass --background, OR use --select on a ",
          "table (e.g. Reversal_classified.txt) so all its rows become the universe.")
@@ -275,6 +342,49 @@ parse_cli <- function() {
 # -----------------------------------------------------------------------------
 LOG <- new.env(); LOG$txt <- character(0)
 say <- function(...) { l <- paste0(...); cat(l, "\n"); LOG$txt <- c(LOG$txt, l) }
+
+# -----------------------------------------------------------------------------
+# diagnostics accumulator: one row per set with the backend counts that matter
+# for QC (input regions, regions after collapse, genes mapped, genes in universe,
+# enriched-term counts). Written to run_diagnostics.csv + a bar figure.
+# -----------------------------------------------------------------------------
+DIAG <- new.env(); DIAG$rows <- list()
+diag_set <- function(set, mode, n_input = NA, n_used = NA, n_genes = NA,
+                     n_universe = NA, note = "") {
+  DIAG$rows[[length(DIAG$rows) + 1L]] <- data.frame(
+    set = set, mode = mode, n_input_regions = n_input, n_regions_used = n_used,
+    n_genes_mapped = n_genes, n_genes_universe = n_universe, note = note,
+    stringsAsFactors = FALSE)
+}
+
+write_diagnostics <- function(outdir) {
+  if (!length(DIAG$rows)) return(invisible())
+  df <- do.call(rbind, DIAG$rows)
+  write.csv(df, file.path(outdir, "run_diagnostics.csv"), row.names = FALSE)
+  say("[DIAG] per-set backend counts -> run_diagnostics.csv")
+  for (i in seq_len(nrow(df)))
+    say(sprintf("[DIAG]   %-26s input=%s used=%s genes=%s universe=%s %s",
+                df$set[i], df$n_input_regions[i], df$n_regions_used[i],
+                df$n_genes_mapped[i], df$n_genes_universe[i], df$note[i]))
+  # bar figure: input regions vs genes mapped, per set
+  if (requireNamespace("ggplot2", quietly = TRUE) &&
+      any(is.finite(df$n_genes_mapped))) {
+    long <- rbind(
+      data.frame(set = df$set, metric = "input regions", value = df$n_input_regions),
+      data.frame(set = df$set, metric = "genes mapped",  value = df$n_genes_mapped))
+    long <- long[is.finite(long$value), , drop = FALSE]
+    p <- ggplot2::ggplot(long, ggplot2::aes(x = stats::reorder(set, value),
+                                            y = value, fill = metric)) +
+      ggplot2::geom_col(position = "dodge") +
+      ggplot2::coord_flip() +
+      ggplot2::labs(title = "Backend diagnostics: set sizes & gene mapping",
+                    x = NULL, y = "count", fill = NULL) +
+      ggplot2::theme_bw(base_size = 10)
+    save_gg(p, "Fig_diagnostics_setsizes", outdir,
+            w = 9, h = max(3, 0.5 * length(unique(long$set)) + 1.5))
+    say("[DIAG] Fig_diagnostics_setsizes.[pdf|png] written")
+  }
+}
 
 # -----------------------------------------------------------------------------
 # robust table / region readers
@@ -473,18 +583,46 @@ run_region_mode <- function(opt, sets, builtin_map, custom_files) {
 
   for (sn in names(sets)) {
     peaks <- sets[[sn]][, c("chr", "start", "end")]
+    n_raw <- nrow(peaks)
+    if (!opt$keep_overlaps) {                 # Broad-Enrich expects DISJOINT regions
+      peaks <- collapse_bins(peaks)
+      if (nrow(peaks) < n_raw)
+        say(sprintf("[region] '%s': merged %d overlapping/adjacent regions -> %d disjoint.",
+                    sn, n_raw, nrow(peaks)))
+    }
     say(sprintf("=== [region] set '%s' : %d regions ===", sn, nrow(peaks)))
+    n_genes_sn <- NA_integer_; note_sn <- ""
 
-    # ---- pass 1: built-in databases (GO_BP / Reactome / KEGG) ----
-    if (length(builtin_gs)) {
+    # ---- pass 1: built-in databases — ONE geneset per broadenrich call ----
+    #   (chipenrich errors on a vector of built-in genesets; loop instead, so a
+    #    failure in one DB never kills the others.)
+    for (bi in seq_along(builtin_gs)) {
+      bn <- builtin_gs[bi]
       r <- tryCatch(
         chipenrich::broadenrich(
-          peaks = peaks, genome = opt$genome, genesets = builtin_gs,
-          locusdef = opt$locusdef, qc_plots = opt$qc_plots, randomization = rand,
-          out_name = paste0("broadenrich_", sn, "_builtin"),
+          peaks = peaks, genome = opt$genome, genesets = bn,
+          locusdef = opt$locusdef,
+          qc_plots = (opt$qc_plots && bi == 1L),     # one QC pdf per set is enough
+          randomization = rand,
+          out_name = paste0("broadenrich_", sn, "_", bn),
           out_path = opt$outdir, n_cores = opt$cores),
-        error = function(e) { say(sprintf("  [ERROR] builtin: %s", conditionMessage(e))); NULL })
-      if (!is.null(r)) all_rows[[paste0(sn, "_builtin")]] <- cbind(Set = sn, r$results)
+        error = function(e) { say(sprintf("  [ERROR] %s / %s: %s", sn, bn, conditionMessage(e))); NULL })
+      if (!is.null(r)) {
+        all_rows[[paste0(sn, "_", bn)]] <- cbind(Set = sn, r$results)
+        if (is.na(n_genes_sn)) {               # diagnostics from first successful DB
+          pk <- tryCatch(r$peaks, error = function(e) NULL)
+          if (!is.null(pk)) {
+            gid <- intersect(c("gene_id", "geneid", "geneId"), colnames(pk))[1]
+            if (!is.na(gid)) n_genes_sn <- length(unique(pk[[gid]]))
+            if ("nearest_tss_dist" %in% colnames(pk)) {
+              genic <- mean(abs(pk$nearest_tss_dist) <= 5000, na.rm = TRUE)
+              note_sn <- sprintf("%.0f%% peaks within 5kb of a TSS", 100 * genic)
+            }
+            say(sprintf("  [region] '%s': %d peaks assigned to %s genes (%s)",
+                        sn, nrow(pk), ifelse(is.na(n_genes_sn), "?", n_genes_sn), note_sn))
+          }
+        }
+      }
     }
 
     # ---- pass 2: custom databases (Hallmark, PRC2 positive control) ----
@@ -502,6 +640,8 @@ run_region_mode <- function(opt, sets, builtin_map, custom_files) {
         all_rows[[paste0(sn, "_", cf)]] <- cbind(Set = sn, rr)
       }
     }
+    diag_set(sn, "region", n_input = n_raw, n_used = nrow(peaks),
+             n_genes = n_genes_sn, note = note_sn)
   }
 
   if (!length(all_rows)) { say("[region] no results produced."); return(invisible()) }
@@ -554,14 +694,17 @@ run_bin_mode <- function(opt, sets, bg_df, msig) {
   # foreground genes per set
   clusters <- list()
   for (sn in names(sets)) {
-    df <- sets[[sn]]
+    df <- sets[[sn]]; n_in <- nrow(df); n_used <- n_in; note <- ""
     if (opt$collapse_adjacent) {
-      n0 <- nrow(df); df <- collapse_bins(df)
-      say(sprintf("[bin] '%s': collapsed %d bins -> %d domains.", sn, n0, nrow(df)))
+      df <- collapse_bins(df); n_used <- nrow(df)
+      note <- sprintf("collapsed %d bins -> %d domains", n_in, n_used)
+      say(sprintf("[bin] '%s': %s.", sn, note))
     }
     g <- intersect(bins_to_entrez(df, opt$genome, opt$bin_assign), universe)
+    diag_set(sn, "bin", n_input = n_in, n_used = n_used, n_genes = length(g),
+             n_universe = length(universe), note = note)
     if (length(g)) { clusters[[sn]] <- g
-      say(sprintf("[bin] '%s': %d genes (within universe).", sn, length(g)))
+      say(sprintf("[bin] '%s': %d genes (within universe of %d).", sn, length(g), length(universe)))
     } else say(sprintf("[bin][WARN] '%s' mapped to 0 in-universe genes; dropped.", sn))
   }
   if (!length(clusters)) stop("No bin sets survived gene assignment.")
@@ -709,8 +852,12 @@ run_lola <- function(opt, sets, universe_df) {
   suppressWarnings(GenomeInfoDb::seqlevelsStyle(grl) <- "UCSC")  # harmonise chr style
 
   # restrict query sets to the universe (LOLA-recommended; avoids many-to-many artifacts)
+  say(sprintf("[LOLA] universe = %d regions; sets: %s", length(uni),
+              paste(sprintf("%s(%d)", names(grl), vapply(grl, length, integer(1))), collapse = ", ")))
   grl <- tryCatch(LOLA::redefineUserSets(grl, uni), error = function(e) grl)
   tryCatch(LOLA::checkUniverseAppropriateness(grl, uni), error = function(e) NULL)
+  say(sprintf("[LOLA] after redefine to universe: %s",
+              paste(sprintf("%s(%d)", names(grl), vapply(grl, length, integer(1))), collapse = ", ")))
 
   res <- LOLA::runLOLA(grl, uni, regionDB, cores = opt$cores)
   rd  <- as.data.frame(res)
@@ -748,6 +895,184 @@ run_lola <- function(opt, sets, universe_df) {
 }
 
 # =============================================================================
+# GENE MODE  ->  DESeq2 DEGs: ORA (up/down vs tested-gene background) + GSEA
+#   ORA  : threshold DEGs (padj<deg_padj & |log2FC|>deg_lfc), split up/down,
+#          compareCluster against the genes that COULD have been called
+#          (non-NA padj) — the correct background, not the genome.
+#   GSEA : rank ALL genes (stat or log2FC) — no arbitrary cutoff. For DEGs this
+#          is usually the more appropriate primary test.
+#   Both use GO_BP / Reactome / Hallmark / KEGG and the Ben-Porath PRC2 control.
+# =============================================================================
+run_gene_mode <- function(opt, msig) {
+  for (p in c("clusterProfiler", "org.Hs.eg.db"))
+    if (!requireNamespace(p, quietly = TRUE)) stop("Package needed for gene mode: ", p)
+  options(enrichment_force_universe = TRUE)
+
+  # ---- read the DESeq2 table (gene IDs in row names OR --gene_col) ----
+  df <- read_full_table(opt$regions, opt$sep)
+  ids <- if (!is.null(opt$gene_col)) {
+    if (!opt$gene_col %in% colnames(df)) stop("--gene_col '", opt$gene_col, "' not in table.")
+    as.character(df[[opt$gene_col]])
+  } else rownames(df)
+  if (is.null(ids) || all(is.na(ids)) || all(ids == seq_len(nrow(df))))
+    stop("No gene IDs found. DESeq2 writes IDs as row names; if yours are in a column, pass --gene_col.")
+  for (c in c(opt$lfc_col, opt$padj_col))
+    if (!c %in% colnames(df)) stop("Column '", c, "' not in table. Have: ", paste(colnames(df), collapse = ", "))
+  lfc  <- suppressWarnings(as.numeric(df[[opt$lfc_col]]))
+  padj <- suppressWarnings(as.numeric(df[[opt$padj_col]]))
+  stat <- if (opt$stat_col %in% colnames(df)) suppressWarnings(as.numeric(df[[opt$stat_col]])) else rep(NA_real_, nrow(df))
+  pval <- if ("pvalue" %in% colnames(df)) suppressWarnings(as.numeric(df[["pvalue"]])) else rep(NA_real_, nrow(df))
+
+  # ---- detect / honour ID type, strip Ensembl version suffixes ----
+  idt <- toupper(opt$id_type)
+  if (idt == "AUTO") {
+    s <- ids[!is.na(ids)][1]
+    idt <- if (grepl("^ENSG", s)) "ENSEMBL" else if (grepl("^[0-9]+$", s)) "ENTREZID" else "SYMBOL"
+    say(sprintf("[gene] auto-detected --id_type = %s (e.g. '%s')", idt, s))
+  }
+  if (idt == "ENSEMBL") ids <- sub("\\..*$", "", ids)   # ENSG000....7 -> ENSG000....
+
+  d <- data.frame(id = ids, lfc = lfc, padj = padj, stat = stat, pval = pval,
+                  stringsAsFactors = FALSE)
+  d <- d[!is.na(d$id) & nzchar(d$id), , drop = FALSE]
+  say(sprintf("[gene] %d rows in table; %d with an ID.", nrow(df), nrow(d)))
+
+  # ---- map to ENTREZ (the key clusterProfiler/GSEA use here) ----
+  if (idt == "ENTREZID") {
+    d$entrez <- d$id
+  } else {
+    m <- tryCatch(suppressWarnings(suppressMessages(
+      clusterProfiler::bitr(unique(d$id), fromType = idt, toType = "ENTREZID",
+                            OrgDb = org.Hs.eg.db))), error = function(e) data.frame())
+    if (!nrow(m)) stop("0 IDs mapped from ", idt, " to ENTREZ — check --id_type.")
+    d <- merge(d, m, by.x = "id", by.y = idt, all.x = TRUE)
+    d$entrez <- d$ENTREZID
+  }
+  n_map <- sum(!is.na(d$entrez))
+  say(sprintf("[gene] mapped %d/%d ids to ENTREZ (%d unmapped).", n_map, nrow(d), nrow(d) - n_map))
+  d <- d[!is.na(d$entrez), , drop = FALSE]
+
+  # ---- universe = genes actually TESTED by DESeq2 (non-NA padj) ----
+  tested <- unique(d$entrez[!is.na(d$padj)])
+  if (!length(tested)) stop("No genes have a non-NA padj — cannot build a tested-gene background.")
+  say(sprintf("[gene] tested-gene background (non-NA padj) = %d genes.", length(tested)))
+
+  dbs <- opt$.dbs
+  run_ora <- opt$deg_analysis %in% c("ora", "both")
+  run_gsea <- opt$deg_analysis %in% c("gsea", "both")
+  comb_for_pc <- NULL
+
+  # ======================= ORA (thresholded up/down) =======================
+  if (run_ora) {
+    sig <- d[!is.na(d$padj) & d$padj < opt$deg_padj & abs(d$lfc) > opt$deg_lfc, , drop = FALSE]
+    up   <- unique(sig$entrez[sig$lfc > 0]); dn <- unique(sig$entrez[sig$lfc < 0])
+    say(sprintf("[gene][ORA] DEGs at padj<%.3g & |lfc|>%.2g : %d up, %d down.",
+                opt$deg_padj, opt$deg_lfc, length(up), length(dn)))
+    diag_set("DEG_up",   "gene", n_input = nrow(d), n_genes = length(up), n_universe = length(tested))
+    diag_set("DEG_down", "gene", n_input = nrow(d), n_genes = length(dn), n_universe = length(tested))
+    clusters <- list(); if (length(up)) clusters$DEG_up <- up; if (length(dn)) clusters$DEG_down <- dn
+
+    if (length(clusters)) {
+      for (db in dbs) {
+        say(sprintf("=== [gene][ORA] %s ===", db))
+        cc <- tryCatch(.cp_compare(db, clusters, tested, opt, msig),
+                       error = function(e) { say(sprintf("  [ERROR] %s: %s", db, conditionMessage(e))); NULL })
+        if (is.null(cc) || nrow(as.data.frame(cc)) == 0) { say(sprintf("  [%s] no enriched terms.", db)); next }
+        dff <- add_fold(as.data.frame(cc))
+        write.csv(dff, file.path(opt$outdir, sprintf("ora_%s_DEG.csv", db)), row.names = FALSE)
+        comb_for_pc <- rbind(comb_for_pc, cbind(Database = db, dff[, intersect(
+          c("Cluster","ID","Description","p.adjust","qvalue","Count"), colnames(dff)), drop = FALSE]))
+        if (requireNamespace("ggplot2", quietly = TRUE)) {
+          p <- tryCatch(clusterProfiler::dotplot(cc, showCategory = opt$top_n, label_format = 55) +
+                        ggplot2::ggtitle(paste0(db, " — DEG ORA (up vs down)")), error = function(e) NULL)
+          if (!is.null(p)) save_gg(p, sprintf("ora_%s_DEG_dotplot", db), opt$outdir, 10, 8)
+        }
+      }
+    }
+  }
+
+  # ============================ GSEA (ranked) ==============================
+  if (run_gsea) {
+    metric <- opt$rank_by
+    if (metric == "auto") metric <- if (any(is.finite(d$stat))) "stat" else "log2fc"
+    rk <- switch(metric,
+                 stat     = d$stat,
+                 log2fc   = d$lfc,
+                 signed_p = sign(d$lfc) * -log10(pmax(d$pval, .Machine$double.xmin)))
+    say(sprintf("[gene][GSEA] ranking by '%s'.", metric))
+    gd <- data.frame(entrez = d$entrez, score = rk, stringsAsFactors = FALSE)
+    gd <- gd[is.finite(gd$score), , drop = FALSE]
+    # collapse duplicate entrez to the most extreme score, then sort decreasing
+    gd <- gd[order(-abs(gd$score)), ]; gd <- gd[!duplicated(gd$entrez), ]
+    gl <- sort(setNames(gd$score, gd$entrez), decreasing = TRUE)
+    say(sprintf("[gene][GSEA] ranked list = %d genes.", length(gl)))
+    diag_set("GSEA_ranked", "gene", n_input = nrow(d), n_genes = length(gl), n_universe = length(gl),
+             note = paste("rank_by", metric))
+
+    for (db in dbs) {
+      say(sprintf("=== [gene][GSEA] %s ===", db))
+      r <- tryCatch(.cp_gsea(db, gl, opt, msig),
+                    error = function(e) { say(sprintf("  [ERROR] %s: %s", db, conditionMessage(e))); NULL })
+      if (is.null(r) || nrow(as.data.frame(r)) == 0) { say(sprintf("  [%s] no enriched gene sets.", db)); next }
+      rdf <- as.data.frame(r)
+      write.csv(rdf, file.path(opt$outdir, sprintf("gsea_%s_DEG.csv", db)), row.names = FALSE)
+      say(sprintf("  [%s] %d significant gene sets (FDR<%.2g).", db, nrow(rdf), opt$qvalue))
+      comb_for_pc <- rbind(comb_for_pc, cbind(Database = paste0("GSEA_", db),
+        data.frame(Cluster = "GSEA", ID = rdf$ID, Description = rdf$Description,
+                   p.adjust = rdf$p.adjust,
+                   qvalue = if ("qvalue" %in% colnames(rdf)) rdf$qvalue else rdf$p.adjust,
+                   Count = rdf$setSize, stringsAsFactors = FALSE)))
+      if (requireNamespace("ggplot2", quietly = TRUE) && requireNamespace("enrichplot", quietly = TRUE)) {
+        tryCatch(save_gg(enrichplot::dotplot(r, showCategory = opt$top_n, split = ".sign") +
+                         ggplot2::facet_grid(. ~ .sign) + ggplot2::ggtitle(paste0("GSEA — ", db)),
+                         sprintf("gsea_%s_DEG_dotplot", db), opt$outdir, 11, 9),
+                 error = function(e) say(sprintf("   [fig] gsea dotplot %s skipped: %s", db, conditionMessage(e))))
+        tryCatch(save_gg(enrichplot::ridgeplot(r, showCategory = min(opt$top_n, 20)) +
+                         ggplot2::ggtitle(paste0("GSEA NES distribution — ", db)),
+                         sprintf("gsea_%s_DEG_ridge", db), opt$outdir, 10, 9),
+                 error = function(e) NULL)
+      }
+    }
+  }
+  comb_for_pc
+}
+
+# shared clusterProfiler ORA (compareCluster) used by gene mode (and mirrors bin mode)
+.cp_compare <- function(db, clusters, universe, opt, msig) {
+  base <- list(geneClusters = clusters, universe = universe,
+               pvalueCutoff = opt$pvalue, qvalueCutoff = opt$qvalue,
+               minGSSize = opt$min_gs, maxGSSize = opt$max_gs)
+  fa <- if (db %in% c("GO_BP","GO_MF","GO_CC"))
+          list(fun = "enrichGO", OrgDb = org.Hs.eg.db, keyType = "ENTREZID",
+               ont = sub("GO_", "", db), readable = TRUE)
+        else if (db == "Reactome") list(fun = "enrichPathway", organism = "human", readable = TRUE)
+        else if (db == "KEGG")     list(fun = "enrichKEGG", organism = "hsa")
+        else                       list(fun = "enricher", TERM2GENE = msig[[db]])
+  cc <- do.call(clusterProfiler::compareCluster, c(base, fa))
+  if (!is.null(cc) && startsWith(db, "GO") && opt$simplify_cutoff > 0 && nrow(as.data.frame(cc)) > 0)
+    cc <- tryCatch(clusterProfiler::simplify(cc, cutoff = opt$simplify_cutoff,
+                   by = "p.adjust", select_fun = min), error = function(e) cc)
+  if (!is.null(cc) && db %in% c("Hallmark","PRC2","KEGG"))
+    cc <- tryCatch(clusterProfiler::setReadable(cc, org.Hs.eg.db, "ENTREZID"), error = function(e) cc)
+  cc
+}
+
+# shared GSEA dispatcher (gene mode)
+.cp_gsea <- function(db, geneList, opt, msig) {
+  common <- list(geneList = geneList, minGSSize = opt$min_gs, maxGSSize = opt$max_gs,
+                 pvalueCutoff = opt$qvalue, eps = 0, verbose = FALSE)
+  r <- if (db %in% c("GO_BP","GO_MF","GO_CC"))
+         do.call(clusterProfiler::gseGO, c(common, list(OrgDb = org.Hs.eg.db,
+                 keyType = "ENTREZID", ont = sub("GO_", "", db))))
+       else if (db == "Reactome") do.call(ReactomePA::gsePathway, c(common, list(organism = "human")))
+       else if (db == "KEGG")     do.call(clusterProfiler::gseKEGG, c(common, list(organism = "hsa")))
+       else                       do.call(clusterProfiler::GSEA, c(common, list(TERM2GENE = msig[[db]])))
+  if (!is.null(r) && db %in% c("Hallmark","PRC2","KEGG","GO_BP","GO_MF","GO_CC","Reactome"))
+    r <- tryCatch(clusterProfiler::setReadable(r, org.Hs.eg.db, "ENTREZID"), error = function(e) r)
+  r
+}
+
+# =============================================================================
 # MAIN
 # =============================================================================
 main <- function() {
@@ -756,9 +1081,55 @@ main <- function() {
   suppressWarnings(suppressMessages(library(msigdbr)))
   if (!requireNamespace("ggplot2", quietly = TRUE)) say("[WARN] ggplot2 missing — no figures.")
 
-  say(sprintf("[INFO] mode=%s genome=%s databases=%s", opt$mode, opt$genome,
+  say("============================================================")
+  say(sprintf("[RUN] %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+  say(sprintf("[SET] mode=%s  genome=%s  databases=%s", opt$mode, opt$genome,
               paste(opt$.dbs, collapse = ",")))
+  say(sprintf("[SET] regions=%s", opt$regions))
+  say(sprintf("[SET] background=%s", ifelse(is.null(opt$background), "(from --select table)", opt$background)))
+  say(sprintf("[SET] select=%s", ifelse(is.null(opt$select), "(none; one set per file)", opt$select)))
+  say(sprintf("[SET] cols: chr=%s start=%s end=%s  sep=%s", opt$chr_col, opt$start_col, opt$end_col, opt$sep))
+  if (opt$mode == "region")
+    say(sprintf("[SET] locusdef=%s  randomization=%s  qc_plots=%s  cores=%d",
+                opt$locusdef, opt$randomization, opt$qc_plots, opt$cores))
+  else if (opt$mode == "bin")
+    say(sprintf("[SET] bin_assign=%s  collapse_adjacent=%s", opt$bin_assign, opt$collapse_adjacent))
+  else
+    say(sprintf("[SET] id_type=%s  lfc_col=%s  padj_col=%s  deg_padj=%.3g  deg_lfc=%.2g  analysis=%s  rank_by=%s",
+                opt$id_type, opt$lfc_col, opt$padj_col, opt$deg_padj, opt$deg_lfc, opt$deg_analysis, opt$rank_by))
+  say(sprintf("[SET] cutoffs: p<%.3g  q<%.3g  gs_size=[%d,%d]  top_n=%d",
+              opt$pvalue, opt$qvalue, opt$min_gs, opt$max_gs, opt$top_n))
+  say(sprintf("[SET] lola_db=%s", ifelse(is.null(opt$lola_db), "(none)", opt$lola_db)))
+  say("============================================================")
 
+  # ---- precompute MSigDB blocks needed in any mode ----
+  msig <- list()
+  if ("Hallmark" %in% opt$.dbs) msig$Hallmark <- get_msig("H")
+  if ("PRC2" %in% opt$.dbs) {
+    msig$PRC2 <- get_msig("C2", "CGP", opt$prc2_regex)
+    say(sprintf("[INFO] PRC2 positive control: %d signatures matched '%s'.",
+                length(unique(msig$PRC2$term)), opt$prc2_regex))
+    if (!length(unique(msig$PRC2$term)))
+      say("[WARN] PRC2 regex matched 0 sets — check msigdbr install / --prc2_regex.")
+  }
+  if ("KEGG" %in% opt$.dbs)
+    say("[NOTE] KEGG enabled (enrichKEGG/gseKEGG fetch live from the KEGG REST API — fine ",
+        "since your compute node has internet). Enrichment TABLES are free to publish ",
+        "with a citation; only a rendered KEGG MAP image needs KEGG's free copyright form.")
+
+  comb <- NULL
+
+  # ============================ GENE MODE =================================
+  if (opt$mode == "gene") {
+    comb <- run_gene_mode(opt, msig)
+    if ("PRC2" %in% opt$.dbs) write_pc(comb, opt$mode, opt$prc2_regex, opt$outdir)
+    write_diagnostics(opt$outdir)
+    writeLines(LOG$txt, file.path(opt$outdir, "enrichment_summary.txt"))
+    say(sprintf("[DONE] outputs in %s", normalizePath(opt$outdir)))
+    return(invisible())
+  }
+
+  # ====================== REGION / BIN MODES =============================
   sets <- read_region_sets(opt)
   say(sprintf("[INFO] %d set(s): %s", length(sets),
               paste(sprintf("%s(%d)", names(sets), vapply(sets, nrow, integer(1))), collapse = ", ")))
@@ -776,21 +1147,6 @@ main <- function() {
   }
   if (!is.null(bg_df)) say(sprintf("[INFO] background = %d regions/bins.", nrow(bg_df)))
 
-  # ---- precompute MSigDB blocks needed in either mode ----
-  msig <- list()
-  if ("Hallmark" %in% opt$.dbs) msig$Hallmark <- get_msig("H")
-  if ("PRC2" %in% opt$.dbs) {
-    msig$PRC2 <- get_msig("C2", "CGP", opt$prc2_regex)
-    say(sprintf("[INFO] PRC2 positive control: %d signatures matched '%s'.",
-                length(unique(msig$PRC2$term)), opt$prc2_regex))
-    if (!length(unique(msig$PRC2$term)))
-      say("[WARN] PRC2 regex matched 0 sets — check msigdbr install / --prc2_regex.")
-  }
-  if ("KEGG" %in% opt$.dbs)
-    say("[NOTE] KEGG enabled. Figures from KEGG maps need a free KEGG copyright form; ",
-        "MSigDB KEGG sets are frozen-legacy. Reactome is the open, current alternative.")
-
-  comb <- NULL
   if (opt$mode == "region") {
     # built-in chipenrich names for the databases it ships
     bmap <- list()
@@ -827,6 +1183,7 @@ main <- function() {
              error = function(e) say(sprintf("[LOLA][ERROR] %s", conditionMessage(e))))
   }
 
+  write_diagnostics(opt$outdir)
   writeLines(LOG$txt, file.path(opt$outdir, "enrichment_summary.txt"))
   say(sprintf("[DONE] outputs in %s", normalizePath(opt$outdir)))
 }
