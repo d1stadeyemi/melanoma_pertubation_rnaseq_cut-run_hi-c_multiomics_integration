@@ -35,11 +35,11 @@ conda activate multiomics-py
 #    --outdir results/exploratory/unc_selective_erasure_cpm
 
 python scripts/analysis/unc_selective_erasure_v2.py --norm cpm \
-  --sample-sheet data/processed/sample_sheet.csv \
-  --compartments data/processed/A375-CompartmentsAcrossConditions.txt \
-  --counts-table results/exploratory/unc_selective_erasure/raw_bin_counts.tsv \
-  --min-baseline-quantile 0.25 \
-  --outdir results/exploratory/unc_selective_erasure_diagnostic
+    --sample-sheet data/processed/sample_sheet.csv \
+    --compartments data/processed/A375-CompartmentsAcrossConditions.txt \
+    --counts-table results/exploratory/unc_selective_erasure/raw_bin_counts.tsv \
+    --min-baseline-quantile 0.25 \
+    --outdir results/exploratory/unc_selective_erasure_diagnostic
 
 #python scripts/analysis/unc_selective_erasure.py \
 #    --sample-sheet  data/processed/sample_sheet.csv \

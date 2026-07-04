@@ -38,37 +38,37 @@ conda activate multiomics-r
 #     --genes data/processed/GeneListTSShg19_cleaned.txt \
 #     --greenlist data/processed/greenlist/greenlist_hg19.bed \
 #     --peaks sheet --baseline_group "B10|DMSO" --fragment_qc --replicate_scatter 
-# # Default: --test contrast
+# Default: --test contrast
 
-# #Rscript scripts/analysis/csaw.R \
-# #    --sheet data/processed/sample_sheet.csv \
-# #    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_2000 \
-# #    --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
-# #    --norm background,spikein,sf --window 2000 \
-# #    --spikein sheet --filter_mode group_aware \
-# #    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-# #    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
-# #    --peaks sheet --baseline_group "B10|DMSO" --fragment_qc --replicate_scatter
+#Rscript scripts/analysis/csaw.R \
+#    --sheet data/processed/sample_sheet.csv \
+#    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_2000 \
+#    --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
+#    --norm background,spikein,sf --window 2000 \
+#    --spikein sheet --filter_mode group_aware \
+#    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
+#    --peaks sheet --baseline_group "B10|DMSO" --fragment_qc --replicate_scatter
 
-# #Rscript scripts/analysis/csaw.R \
-# #    --sheet data/processed/sample_sheet.csv \
-# #    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_2000_filterglobal \
-# #    --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
-# #    --norm background,spikein,sf --window 2000 \
-# #    --spikein sheet \
-# #    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-# #    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
-# #    --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter
+#Rscript scripts/analysis/csaw.R \
+#    --sheet data/processed/sample_sheet.csv \
+#    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_2000_filterglobal \
+#    --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
+#    --norm background,spikein,sf --window 2000 \
+#    --spikein sheet \
+#    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
+#    --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter
 
-# #Rscript scripts/analysis/csaw.R \
-# #    --sheet data/processed/sample_sheet.csv \
-# #    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_2000_minlfc1.5 \
-# #    --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
-# #    --norm background,spikein,sf --window 2000 --min_lfc_bg 0.585 \
-# #    --spikein sheet --filter_mode group_aware \
-# #    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-# #    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
-# #    --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter
+#Rscript scripts/analysis/csaw.R \
+#    --sheet data/processed/sample_sheet.csv \
+#    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_2000_minlfc1.5 \
+#    --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
+#    --norm background,spikein,sf --window 2000 --min_lfc_bg 0.585 \
+#    --spikein sheet --filter_mode group_aware \
+#    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
+#    --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter
 
 # Rscript scripts/analysis/csaw.R \
 #     --sheet data/processed/sample_sheet.csv \
@@ -81,28 +81,28 @@ conda activate multiomics-r
 #     --genes data/processed/GeneListTSShg19_cleaned.txt \
 #     --greenlist data/processed/greenlist/greenlist_hg19.bed \
 #     --peaks sheet --baseline_group "Parental|DMSO" --fragment_qc --replicate_scatter 
-# # Default: --test contrast
-
-# #Rscript scripts/analysis/csaw.R \
-# #    --sheet data/processed/sample_sheet.csv \
-# #    --outdir results/exploratory/diff_analysis/csaw/Migrated_B10unc_2000 \
-# #    --mark migrated --group1 "B10|UNC" --group2 "B10|DMSO" \
-# #    --norm background,spikein,sf --window 2000 \
-# #    --spikein sheet --filter_mode group_aware \
-# #    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-# #    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
-# #    --peaks sheet --baseline_group "Parental|DMSO" --fragment_qc --replicate_scatter
+# Default: --test contrast
 
 # Rscript scripts/analysis/csaw.R \
-#     --sheet data/processed/sample_sheet.csv \
-#     --outdir results/exploratory/diff_analysis/csaw/Chronic_B8unc \
-#     --mark chronic --group1 "B8|UNC" --group2 "B8|DMSO" \
-#     --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
-#     --spikein sheet --filter_mode group_aware \
-#     --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-#     --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
-#     --genes data/processed/GeneListTSShg19_cleaned.txt \
-#     --greenlist data/processed/greenlist/greenlist_hg19.bed
+#    --sheet data/processed/sample_sheet.csv \
+#    --outdir results/exploratory/diff_analysis/csaw/Migrated_B10unc_2000 \
+#    --mark migrated --group1 "B10|UNC" --group2 "B10|DMSO" \
+#    --norm background,spikein,sf --window 2000 \
+#    --spikein sheet --filter_mode group_aware \
+#    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
+#    --peaks sheet --baseline_group "Parental|DMSO" --fragment_qc --replicate_scatter
+
+Rscript scripts/analysis/csaw.R \
+    --sheet data/processed/sample_sheet.csv \
+    --outdir results/exploratory/diff_analysis/csaw/Chronic_B8unc \
+    --mark migrated --group1 "B8|UNC" --group2 "B8|DMSO" \
+    --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
+    --spikein sheet --filter_mode group_aware \
+    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
+    --genes data/processed/GeneListTSShg19_cleaned.txt \
+    --greenlist data/processed/greenlist/greenlist_hg19.bed
 
 # # Rscript scripts/analysis/csaw.R \
 #     --sheet data/processed/sample_sheet.csv \
@@ -142,7 +142,7 @@ conda activate multiomics-r
 
 # Rscript scripts/analysis/csaw.R \
 #     --sheet data/processed/sample_sheet.csv \
-#     --outdir results/exploratory/diff_analysis/csaw/Migrated_B8unc_vs_Parunc \
+#     --outdir results/exploratory/diff_analysis/csaw/Migrated_B8unc_vs_B10unc \
 #     --mark migrated --group1 "B8|UNC" --group2 "B10|UNC" \
 #     --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
 #     --spikein sheet --filter_mode group_aware \
@@ -182,26 +182,26 @@ conda activate multiomics-r
 #       --genes data/processed/GeneListTSShg19_cleaned.txt \
 #       --outdir results/exploratory/diff_analysis/csaw/overlap_migrated_UNC_Parental_vs_B10
 
-Rscript scripts/analysis/csaw.R \
-    --sheet data/processed/sample_sheet_epz.csv \
-    --outdir results/test/diff_analysis/Parental_epz \
-    --mark H3K27me3 --group1 "Parental|EPZ" --group2 "Parental|DMSO" \
-    --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
-    --spikein sheet --filter_mode group_aware \
-    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-    --normfactors data/processed/spikefree/epz/H3K27me3_normfactors.csv \
-    --greenlist data/processed/greenlist/greenlist_hg19.bed \
-    --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter 
+# Rscript scripts/analysis/csaw.R \
+#     --sheet data/processed/sample_sheet_epz.csv \
+#     --outdir results/test/diff_analysis/Parental_epz \
+#     --mark H3K27me3 --group1 "Parental|EPZ" --group2 "Parental|DMSO" \
+#     --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
+#     --spikein sheet --filter_mode group_aware \
+#     --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#     --normfactors data/processed/spikefree/epz/H3K27me3_normfactors.csv \
+#     --greenlist data/processed/greenlist/greenlist_hg19.bed \
+#     --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter 
 
-Rscript scripts/analysis/csaw.R \
-    --sheet data/processed/sample_sheet_epz.csv \
-    --outdir results/test/diff_analysis/B10_epz \
-    --mark H3K27me3 --group1 "B10|EPZ" --group2 "B10|DMSO" \
-    --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
-    --spikein sheet --filter_mode group_aware \
-    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-    --normfactors data/processed/spikefree/epz/H3K27me3_normfactors.csv \
-    --greenlist data/processed/greenlist/greenlist_hg19.bed \
-    --peaks sheet --baseline_group "Parental|DMSO" --replicate_scatter
+# Rscript scripts/analysis/csaw.R \
+#     --sheet data/processed/sample_sheet_epz.csv \
+#     --outdir results/test/diff_analysis/B10_epz \
+#     --mark H3K27me3 --group1 "B10|EPZ" --group2 "B10|DMSO" \
+#     --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
+#     --spikein sheet --filter_mode group_aware \
+#     --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#     --normfactors data/processed/spikefree/epz/H3K27me3_normfactors.csv \
+#     --greenlist data/processed/greenlist/greenlist_hg19.bed \
+#     --peaks sheet --baseline_group "Parental|DMSO" --replicate_scatter
 
 conda deactivate

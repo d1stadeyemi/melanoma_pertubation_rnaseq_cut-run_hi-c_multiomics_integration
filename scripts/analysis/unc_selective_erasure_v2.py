@@ -6,11 +6,70 @@ unc_selective_erasure.py
 Does UNC1999 (EZH2/EZH1 inhibitor) SELECTIVELY erase the H3K27me3 that
 constricted migration installed?
 
-Scientific core unchanged from prior versions. This revision ADDS an anomaly
-diagnostics suite (D1-D5) to localize the source of the Parental-arm directional
-anomaly, plus a selectable baseline-control mode --baseline-match {decile,fine,residual}.
+Scientific core unchanged from prior versions. This revision keeps everything as
+before and ADDS a COMPARTMENT-MATCHED reference analysis on top of the existing
+outputs.
+
+WHY compartment matching (read this):
+    Diagnostic D5 shows dUNC tracks compartment (PC1): in the Parental arm dUNC is a
+    steep function of PC1, in B10 it is flat. The switcher / reverter / gainer sets
+    are compartment-PURE, but the generic "stable" reference is compartment-MIXED, so
+    the naive target-vs-stable delta partly re-reads the dUNC~PC1 gradient rather than
+    a set-specific effect (hence Parental over-shooting the stable median instead of
+    hugging it). The fix is to contrast each target ONLY against stable bins of the
+    SAME baseline compartment IN THE ARM BEING MEASURED. A switcher changes compartment
+    between cell lines, so the matching flips per arm:
+        A_to_B locus            = A in Parental , B in B10
+        B_to_A locus            = B in Parental , A in B10
+        reverter rev_atb (UNC A->B, starts A)   = A in B10 baseline
+        reverter rev_bta (UNC B->A, starts B)   = B in B10 baseline
+    This is a SELECTIVITY test and is valid under CPM (it is within-arm & within-
+    compartment); it does NOT license cross-cell-line magnitude claims, which still
+    require spike-in / greenlist normalization.
+
+This revision also retains the anomaly diagnostics suite (D1-D5) and the selectable
+baseline-control mode --baseline-match {decile,fine,residual}.
+
+New outputs (in --outdir):
+    compartment_matched_results.tsv          per-contrast Cliff's delta / CI / perm-p
+    forest_effect_sizes_cmatched.png         forest of the 6 compartment-matched contrasts
+    violin_cmatched_b10_stableA.png          B10 arm, A-compartment sets vs Stable A
+    violin_cmatched_b10_stableB.png          B10 arm, B-compartment sets vs Stable B
+    violin_cmatched_parental_stableA.png     Parental arm, A-compartment set vs Stable A
+    violin_cmatched_parental_stableB.png     Parental arm, B-compartment set vs Stable B
+    violin_cmatched_combined_stableA.png     both arms, A-compartment (per-arm stable ref)
+    violin_cmatched_combined_stableB.png     both arms, B-compartment (per-arm stable ref)
 
 Environment: conda env multiomics-py (deeptools, numpy, scipy, pandas, matplotlib)
+
+USAGE EXAMPLES
+--------------
+# Standard run (CPM), diagnostics + compartment-matched analysis both on by default:
+python unc_selective_erasure.py \
+    --sample-sheet sample_sheet.csv \
+    --compartments compartments_250kb_hg19.tsv \
+    --counts-table raw_bin_counts.tsv \
+    --project-root . \
+    --outdir results/exploratory/unc_selective_erasure \
+    --plot-gainers
+
+# Publication-grade selectivity: CPM is fine for the compartment-matched (relative)
+# test; add greenlist size factors only when you also want magnitude statements:
+python unc_selective_erasure.py \
+    --sample-sheet sample_sheet.csv --compartments comp_250kb.tsv \
+    --counts-table raw_bin_counts.tsv \
+    --norm greenlist --size-factors greenlist_size_factors.tsv \
+    --baseline-match residual --n-perm 1000 --n-boot 1000 \
+    --outdir results/final/unc_selective_erasure
+
+# Only the 4 single-arm compartment-matched violins, skip the 2 combined panels:
+python unc_selective_erasure.py ... --no-cmatched-combined
+
+# Skip the compartment-matched block entirely (old behaviour):
+python unc_selective_erasure.py ... --no-compartment-matched
+
+# Validate the statistics core without any data:
+python unc_selective_erasure.py --self-test
 """
 import argparse, os, subprocess, sys, shutil, json, datetime as _dt
 import numpy as np
@@ -376,8 +435,15 @@ def plot_violin(panels, value_desc, outpath, show_box=True, cell_tag=""):
         pos=np.arange(1,len(usable)+1)
         fig,ax=plt.subplots(figsize=(1.2*len(usable)+1.5,5.5), constrained_layout=True)
         vp=ax.violinplot(trimmed, positions=pos, showmedians=False, showextrema=False, widths=0.5)
+        PARENTAL_CAT={"switcher":"#59a14f","reverter":"#8c564b","gainer":"#f28e2b"}  # green / brown / orange
         for body,p in zip(vp["bodies"], usable):
-            body.set_facecolor(p["color"]); body.set_edgecolor("black"); body.set_alpha(0.85); body.set_linewidth(0.6)
+            col=p["color"]
+            if p.get("group")=="Parental" and not p.get("ref"):
+                col=PARENTAL_CAT.get(  # map body color back to category
+                    "switcher" if p["color"]==CAT_COLORS["switcher"] else
+                    "reverter" if p["color"]==CAT_COLORS["reverter"] else
+                    "gainer",   p["color"])
+            body.set_facecolor(col); body.set_edgecolor("black"); body.set_alpha(0.85); body.set_linewidth(0.6)
         if show_box:
             for x,v in zip(pos,clean):
                 if len(v)<5: continue
@@ -405,6 +471,81 @@ def plot_violin(panels, value_desc, outpath, show_box=True, cell_tag=""):
     except Exception as e: print(f"[warn] violin plot failed: {e}")
 
 
+def plot_violin_grouped(panels, value_desc, outpath, group_order, title=""):
+    """Combined violin for the compartment-matched selectivity view: several arms on
+    ONE axis, each arm carrying its OWN same-compartment stable reference. Every panel
+    dict must include panel['group'] (one of the labels in group_order) and panel.get
+    ('ref') marks that group's stable reference. A dashed median line is drawn per
+    group (its own stable ref), a faint divider separates groups, and delta/stars
+    annotate each non-ref panel vs ITS group's stable.
+
+    IMPORTANT (interpretation): cross-group violin HEIGHTS are not comparable under CPM
+    (each arm is its own normalization frame). The readable quantity is the WITHIN-group
+    target-minus-stable gap (the selectivity), which is what the delta annotations report.
+    """
+    try:
+        group_colors={"B10":"#1f77b4","Parental":"#ff7f0e"}
+        ordered=[]
+        for g in group_order:
+            ordered+= [p for p in panels if p.get("group")==g]
+        usable=[p for p in ordered if len(np.asarray(p["values"],float)[np.isfinite(np.asarray(p["values"],float))])>=2]
+        if len(usable)<2: print("[warn] grouped violin: <2 usable panels, skipping"); return
+        clean=[np.asarray(p["values"],float)[np.isfinite(np.asarray(p["values"],float))] for p in usable]
+        allv=np.concatenate(clean); lo,hi=np.nanpercentile(allv,[1,99])
+        if not (np.isfinite(lo) and np.isfinite(hi)) or hi<=lo: lo,hi=float(np.nanmin(allv)),float(np.nanmax(allv))
+        rng=max(hi-lo,1e-9)
+        trimmed=[v[(v>=lo)&(v<=hi)] if len(v[(v>=lo)&(v<=hi)])>=2 else v for v in clean]
+        pos=np.arange(1,len(usable)+1)
+        fig,ax=plt.subplots(figsize=(1.25*len(usable)+2.0,5.6), constrained_layout=True)
+        vp=ax.violinplot(trimmed, positions=pos, showmedians=False, showextrema=False, widths=0.5)
+        PARENTAL_CAT={"switcher":"#59a14f","reverter":"#8c564b","gainer":"#f28e2b"}  # green / brown / orange
+        for body,p in zip(vp["bodies"], usable):
+            col=p["color"]
+            if p.get("group")=="Parental" and not p.get("ref"):
+                col=PARENTAL_CAT.get(  # map body color back to category
+                    "switcher" if p["color"]==CAT_COLORS["switcher"] else
+                    "reverter" if p["color"]==CAT_COLORS["reverter"] else
+                    "gainer",   p["color"])
+            body.set_facecolor(col); body.set_edgecolor("black"); body.set_alpha(0.85); body.set_linewidth(0.6)
+        for x,v in zip(pos,clean):
+            if len(v)<5: continue
+            q1,med,q3=np.percentile(v,[25,50,75]); wlo,whi=np.percentile(v,[5,95])
+            ax.plot([x,x],[max(wlo,lo),min(whi,hi)], color="black", lw=1.0, zorder=3)
+            ax.plot([x,x],[q1,q3], color="black", lw=5.0, solid_capstyle="butt", zorder=4)
+            ax.scatter([x],[med], color="white", s=20, zorder=5, edgecolor="black", linewidth=0.6)
+        ax.axhline(0, color="grey", ls=":", lw=1, zorder=1)
+        # per-group dashed stable-median line spanning only that group's x-range, + dividers
+        groups_present=[g for g in group_order if any(p.get("group")==g for p in usable)]
+        xpos_by_group={g:[x for x,p in zip(pos,usable) if p.get("group")==g] for g in groups_present}
+        for g in groups_present:
+            gx=xpos_by_group[g]
+            refp=next((p for p in usable if p.get("group")==g and p.get("ref")), None)
+            if refp is not None:
+                rv=np.asarray(refp["values"],float); rv=rv[np.isfinite(rv)]
+                if len(rv):
+                    ax.plot([min(gx)-0.45,max(gx)+0.45],[np.median(rv)]*2, color=group_colors.get(g,"grey"),
+                            ls="--", lw=1.3, alpha=0.8, zorder=2)
+        # dividers between groups
+        for a,b in zip(groups_present[:-1],groups_present[1:]):
+            xr=(max(xpos_by_group[a])+min(xpos_by_group[b]))/2.0
+            ax.axvline(xr, color="grey", lw=0.8, alpha=0.5, ls="-")
+        for x,p in zip(pos,usable):
+            if p.get("ref"): continue
+            d=p.get("delta",np.nan); pv=p.get("p",np.nan)
+            ax.text(x, hi+0.05*rng, p_stars(pv), ha="center", va="bottom", fontsize=11, fontweight="bold")
+            ax.text(x, hi+0.18*rng, f"δ={d:+.2f}\n({cliff_band(d)})", ha="center", va="bottom", fontsize=10)
+        ax.set_xticks(pos)
+        ax.set_xticklabels([f"{p['label']}\n[{p.get('group','')}] (n={p.get('n',len(c))})" for p,c in zip(usable,clean)], fontsize=10)
+        ax.set_ylim(lo-0.12*rng, hi+0.42*rng); ax.set_ylabel(value_desc)
+        from matplotlib.lines import Line2D
+        handles=[Line2D([0],[0], color=group_colors.get(g,"grey"), ls="--", lw=1.3, label=f"{g} stable median") for g in groups_present]
+        ax.legend(handles=handles, fontsize=9, frameon=False, loc="lower right")
+        base_ttl=title or "Compartment-matched UNC H3K27me3 selectivity"
+        ax.set_title(base_ttl + "\n(within-arm δ vs same-compartment stable; heights not comparable across arms)")
+        fig.savefig(outpath, dpi=150); plt.close(fig)
+    except Exception as e: print(f"[warn] grouped violin failed: {e}")
+
+
 def plot_balance(master, target_mask, baseline_col, name, outpath):
     try:
         fig,ax=plt.subplots(figsize=(6,4), constrained_layout=True)
@@ -416,7 +557,7 @@ def plot_balance(master, target_mask, baseline_col, name, outpath):
     except Exception as e: print(f"[warn] balance plot failed: {e}")
 
 
-def plot_forest(results, outpath):
+def plot_forest(results, outpath, title=None):
     try:
         df=results.copy()
         df["_c"]=df["cell_line"].map({"B10":0,"Parental":1}).fillna(9); df["_o"]=range(len(df))
@@ -438,12 +579,121 @@ def plot_forest(results, outpath):
         xmax=float(np.nanmax([results["ci_high"].max(), results["cliffs_delta"].max()]))
         pad=0.10*(xmax-xmin); ax.set_xlim(xmin-pad, xmax+pad)
         ax.set_xlabel("Cliff's δ   (negative = H3K27me3 depletion enriched at target)", fontsize=11)
-        ax.set_title("UNC selective-erasure effect sizes\n(point = δ, bar = bootstrap 95% CI, * = perm p<0.05)")
+        ax.set_title(title or "UNC selective-erasure effect sizes\n(point = δ, bar = bootstrap 95% CI, * = perm p<0.05)")
         from matplotlib.lines import Line2D
         handles=[Line2D([0],[0], marker="o", color="w", label=k, markerfacecolor=v, markersize=9) for k,v in colors.items()]
         ax.legend(handles=handles, fontsize=9, frameon=True, framealpha=0.9, loc="lower left")
         fig.savefig(outpath, dpi=150); plt.close(fig)
     except Exception as e: print(f"[warn] forest plot failed: {e}")
+
+
+# =============================================================================
+# COMPARTMENT-MATCHED REFERENCE ANALYSIS
+# Each target set is contrasted ONLY against stable bins of the SAME baseline
+# compartment IN THE ARM BEING MEASURED, cancelling the dUNC~PC1 gradient that D5
+# exposes. A switcher flips compartment between cell lines, so matching flips per arm.
+# =============================================================================
+def run_compartment_matched(master, masks, args, combined=True):
+    stabA=masks["stabA"]; stabB=masks["stabB"]
+    atb=masks["atb"]; bta=masks["bta"]; rev_atb=masks["rev_atb"]; rev_bta=masks["rev_bta"]
+
+    # (cell, ref_label, ref_mask, target_set, target_mask, value_col, baseline_col)
+    #   B10 arm : A_to_B is B-in-B10 -> Stable_B ; B_to_A is A-in-B10 -> Stable_A
+    #             rev_atb starts A (UNC A->B) -> Stable_A ; rev_bta starts B -> Stable_B
+    #   Parental: A_to_B is A-in-Parental -> Stable_A ; B_to_A is B-in-Parental -> Stable_B (no reverters)
+    plan=[
+        ("B10","Stable_A",stabA,"switchers_B_to_A", bta,    "dUNC_b10","baseline_b10"),
+        ("B10","Stable_A",stabA,"reverters_A_to_B", rev_atb,"dUNC_b10","baseline_b10"),
+        ("B10","Stable_B",stabB,"switchers_A_to_B", atb,    "dUNC_b10","baseline_b10"),
+        ("B10","Stable_B",stabB,"reverters_B_to_A", rev_bta,"dUNC_b10","baseline_b10"),
+        ("Parental","Stable_A",stabA,"switchers_A_to_B", atb,"dUNC_parental","baseline_parental"),
+        ("Parental","Stable_B",stabB,"switchers_B_to_A", bta,"dUNC_parental","baseline_parental"),
+    ]
+
+    rows=[]
+    for i,(cell,ref_label,ref_mask,tname,tmask,vcol,bcol) in enumerate(plan):
+        res=run_contrast(master, tmask, ref_mask, vcol, bcol, args.n_strata, args.n_perm,
+                         seed=args.seed+100+i, n_boot=args.n_boot,
+                         baseline_match=args.baseline_match, n_ref_bins=args.n_ref_bins)
+        res.update(cell_line=cell, ref_compartment=ref_label, target_set=tname, value_col=vcol)
+        res["interpretation"]=interpret(res["cliffs_delta"], res["perm_p_two_sided"])
+        rows.append(res)
+        print(f"  [cmatch {cell:8s}] {ref_label} vs {tname:18s} delta={res['cliffs_delta']:+.3f}  "
+              f"p={res['perm_p_two_sided']:.4f}  (nT={res['n_target']}, nRef={res['n_stable']})  -> {res['interpretation']}")
+
+    cm=pd.DataFrame(rows)[["cell_line","ref_compartment","target_set","value_col","n_target","n_stable",
+                           "cliffs_delta","ci_low","ci_high","perm_p_two_sided","median_target",
+                           "median_stable","n_perm_valid","interpretation"]]
+    cm_path=os.path.join(args.outdir,"compartment_matched_results.tsv")
+    cm.to_csv(cm_path, sep="\t", index=False)
+    print(f"[info] compartment-matched results -> {cm_path}")
+
+    # forest (reuse plot_forest; fold the reference compartment into the row label)
+    cm_forest=cm.copy()
+    cm_forest["target_set"]=cm_forest["ref_compartment"]+" vs "+cm_forest["target_set"]
+    plot_forest(cm_forest, os.path.join(args.outdir,"forest_effect_sizes_cmatched.png"),
+                title="Compartment-matched UNC selectivity (each target vs same-compartment stable)\n"
+                      "(point = δ, bar = bootstrap 95% CI, * = perm p<0.05)")
+
+    cm_lookup={(r["cell_line"],r["target_set"]):r for _,r in cm.iterrows()}
+
+    def _cpanel(label, mask, cat, set_name, cell, value_col, ref=False, group=None):
+        mask=np.asarray(mask,bool); n=int(mask.sum())
+        if not ref and n<args.min_plot_n: return None
+        row=cm_lookup.get((cell,set_name)) if set_name else None
+        return {"label":label,"color":CAT_COLORS[cat],"ref":ref,"n":n,"group":group,
+                "values":master.loc[mask,value_col].dropna().values,
+                "delta":(row["cliffs_delta"] if row is not None else np.nan),
+                "p":(row["perm_p_two_sided"] if row is not None else np.nan)}
+
+    # ---- 4 single-arm violins (unambiguous; good for supplement) ----
+    # 1) B10 / Stable_A : the A-in-B10 sets (B->A switch, A->B revert)
+    p1=[p for p in [_cpanel("Stable A",stabA,"stable",None,"B10","dUNC_b10",ref=True),
+                    _cpanel("B→A switch",bta,"switcher","switchers_B_to_A","B10","dUNC_b10"),
+                    _cpanel("A→B revert",rev_atb,"reverter","reverters_A_to_B","B10","dUNC_b10")] if p is not None]
+    plot_violin(p1, "dUNC = log2(UNC/none)  [B10]", os.path.join(args.outdir,"violin_cmatched_b10_stableA.png"),
+                cell_tag="B10 · A-compartment vs Stable A")
+    # 2) B10 / Stable_B : the B-in-B10 sets (A->B switch, B->A revert)
+    p2=[p for p in [_cpanel("Stable B",stabB,"stable",None,"B10","dUNC_b10",ref=True),
+                    _cpanel("A→B switch",atb,"switcher","switchers_A_to_B","B10","dUNC_b10"),
+                    _cpanel("B→A revert",rev_bta,"reverter","reverters_B_to_A","B10","dUNC_b10")] if p is not None]
+    plot_violin(p2, "dUNC = log2(UNC/none)  [B10]", os.path.join(args.outdir,"violin_cmatched_b10_stableB.png"),
+                cell_tag="B10 · B-compartment vs Stable B")
+    # 3) Parental / Stable_A : A->B switch (A-in-Parental)
+    p3=[p for p in [_cpanel("Stable A",stabA,"stable",None,"Parental","dUNC_parental",ref=True),
+                    _cpanel("A→B switch",atb,"switcher","switchers_A_to_B","Parental","dUNC_parental")] if p is not None]
+    plot_violin(p3, "dUNC = log2(UNC/none)  [Parental]", os.path.join(args.outdir,"violin_cmatched_parental_stableA.png"),
+                cell_tag="Parental · A-compartment vs Stable A")
+    # 4) Parental / Stable_B : B->A switch (B-in-Parental)
+    p4=[p for p in [_cpanel("Stable B",stabB,"stable",None,"Parental","dUNC_parental",ref=True),
+                    _cpanel("B→A switch",bta,"switcher","switchers_B_to_A","Parental","dUNC_parental")] if p is not None]
+    plot_violin(p4, "dUNC = log2(UNC/none)  [Parental]", os.path.join(args.outdir,"violin_cmatched_parental_stableB.png"),
+                cell_tag="Parental · B-compartment vs Stable B")
+
+    # ---- 2 combined panels (both arms share a stable compartment; per-arm stable ref) ----
+    if combined:
+        # Combined Stable_A: A-compartment sets from both arms, each vs its OWN arm's Stable A
+        cA=[p for p in [
+            _cpanel("Stable A",stabA,"stable",None,"B10","dUNC_b10",ref=True,group="B10"),
+            _cpanel("B→A switch",bta,"switcher","switchers_B_to_A","B10","dUNC_b10",group="B10"),
+            _cpanel("A→B revert",rev_atb,"reverter","reverters_A_to_B","B10","dUNC_b10",group="B10"),
+            _cpanel("Stable A",stabA,"stable",None,"Parental","dUNC_parental",ref=True,group="Parental"),
+            _cpanel("A→B switch",atb,"switcher","switchers_A_to_B","Parental","dUNC_parental",group="Parental"),
+        ] if p is not None]
+        plot_violin_grouped(cA, "dUNC = log2(UNC/none)", os.path.join(args.outdir,"violin_cmatched_combined_stableA.png"),
+                            group_order=["B10","Parental"], title="Compartment-matched selectivity · A-compartment sets")
+        # Combined Stable_B: B-compartment sets from both arms, each vs its OWN arm's Stable B
+        cB=[p for p in [
+            _cpanel("Stable B",stabB,"stable",None,"B10","dUNC_b10",ref=True,group="B10"),
+            _cpanel("A→B switch",atb,"switcher","switchers_A_to_B","B10","dUNC_b10",group="B10"),
+            _cpanel("B→A revert",rev_bta,"reverter","reverters_B_to_A","B10","dUNC_b10",group="B10"),
+            _cpanel("Stable B",stabB,"stable",None,"Parental","dUNC_parental",ref=True,group="Parental"),
+            _cpanel("B→A switch",bta,"switcher","switchers_B_to_A","Parental","dUNC_parental",group="Parental"),
+        ] if p is not None]
+        plot_violin_grouped(cB, "dUNC = log2(UNC/none)", os.path.join(args.outdir,"violin_cmatched_combined_stableB.png"),
+                            group_order=["B10","Parental"], title="Compartment-matched selectivity · B-compartment sets")
+
+    return cm
 
 
 def map_genes(master, gene_table_path, outdir, genes_per_bin="one"):
@@ -762,6 +1012,9 @@ def main(args):
     rev_atb=rev & (master["unc_dir_b10"]=="A_to_B").values
     rev_bta=rev & (master["unc_dir_b10"]=="B_to_A").values
     gain=master["is_gainer"].values; stab=master["is_stable"].values
+    # compartment-split stable references (same definition as is_stable, split by side)
+    stabA=(master["mig_dir"]=="Stable_A").values & (~gain)
+    stabB=(master["mig_dir"]=="Stable_B").values & (~gain)
 
     plan=[("B10","migration_switchers",sw,"dUNC_b10","baseline_b10"),
           ("B10","switchers_A_to_B",atb,"dUNC_b10","baseline_b10"),
@@ -831,6 +1084,13 @@ def main(args):
     plot_balance(master, sw, "baseline_b10", "switchers", os.path.join(args.outdir,"balance_switchers.png"))
     plot_forest(results, os.path.join(args.outdir,"forest_effect_sizes.png"))
 
+    # --- compartment-matched selectivity analysis (own forest + 4 single-arm + 2 combined violins) ---
+    if args.compartment_matched:
+        print("[cmatch] compartment-matched reference analysis (each target vs same-compartment stable):")
+        run_compartment_matched(master,
+                                dict(stabA=stabA, stabB=stabB, atb=atb, bta=bta, rev_atb=rev_atb, rev_bta=rev_bta),
+                                args, combined=args.cmatched_combined)
+
     if args.diagnose:
         run_all_diagnostics(master, args, args.outdir)
     if args.gene_table:
@@ -871,12 +1131,63 @@ def self_test():
     dd_res=run_contrast(dfm,is_t,~is_t,"v","b",n_strata=10,n_perm=300,seed=1,baseline_match="residual",n_ref_bins=50)["cliffs_delta"]
     print(f"    leakage artifact: decile δ={dd_dec:+.3f}  residual δ={dd_res:+.3f}")
     assert abs(dd_res)<abs(dd_dec)*0.6+0.02, "residualization should shrink leakage"
+    print("--- compartment-matched: pairing + plumbing ---")
+    _test_compartment_matched()
     print("ALL SELF-TESTS PASSED")
+
+
+def _test_compartment_matched():
+    """Synthetic check that run_compartment_matched maps each target to the correct
+    same-arm compartment (A_to_B -> Stable_A in Parental but Stable_B in B10, etc.)
+    and emits the table + forest + 6 violins without error."""
+    import tempfile
+    rng=np.random.default_rng(0); N=6000
+    mig=np.random.default_rng(1).choice(["Stable_A","Stable_B","A_to_B","B_to_A","None"],size=N,p=[0.35,0.30,0.12,0.12,0.11])
+    pc1_par=np.where(np.isin(mig,["Stable_A","A_to_B"]),0.04,-0.04)+rng.normal(0,0.02,N)
+    pc1_b10=np.where(np.isin(mig,["Stable_A","B_to_A"]),0.04,-0.04)+rng.normal(0,0.02,N)
+    unc_dir=np.array([None]*N,dtype=object)
+    pool=np.where(np.isin(mig,["A_to_B","B_to_A"]))[0]
+    for idx in rng.choice(pool,size=int(0.4*len(pool)),replace=False):
+        unc_dir[idx]="B_to_A" if mig[idx]=="A_to_B" else "A_to_B"
+    master=pd.DataFrame({"mig_dir":mig,"unc_dir_b10":unc_dir,
+        "dUNC_parental":-6.0*pc1_par+rng.normal(0,0.3,N),
+        "dUNC_b10":-1.2*pc1_b10+rng.normal(0,0.3,N),
+        "baseline_parental":6+2*pc1_par+rng.normal(0,0.5,N),
+        "baseline_b10":6+2*pc1_b10+rng.normal(0,0.5,N),
+        "is_gainer":rng.random(N)<0.08})
+    master["is_stable"]=np.isin(mig,["Stable_A","Stable_B"])&~master["is_gainer"]
+    gain=master["is_gainer"].values
+    masks=dict(stabA=(master["mig_dir"]=="Stable_A").values&~gain,
+               stabB=(master["mig_dir"]=="Stable_B").values&~gain,
+               atb=(master["mig_dir"]=="A_to_B").values,
+               bta=(master["mig_dir"]=="B_to_A").values,
+               rev_atb=(master["unc_dir_b10"]=="A_to_B").values,
+               rev_bta=(master["unc_dir_b10"]=="B_to_A").values)
+    # purity assertions (the whole point of the corrected pairing)
+    assert master.loc[masks["atb"],:].pipe(lambda d:(pc1_par[masks["atb"]]>0).mean())>0.9, "A_to_B should be A in Parental"
+    assert (pc1_b10[masks["atb"]]>0).mean()<0.1, "A_to_B should be B in B10"
+    assert (pc1_b10[masks["bta"]]>0).mean()>0.9, "B_to_A should be A in B10"
+    assert (pc1_b10[masks["rev_atb"]]>0).mean()>0.9, "rev_atb (UNC A->B, starts A) should be A in B10"
+    assert (pc1_b10[masks["rev_bta"]]>0).mean()<0.1, "rev_bta (UNC B->A, starts B) should be B in B10"
+    class _A: pass
+    a=_A(); a.n_strata=8; a.n_perm=150; a.n_boot=80; a.seed=0
+    a.baseline_match="decile"; a.n_ref_bins=40; a.min_plot_n=15
+    with tempfile.TemporaryDirectory() as td:
+        a.outdir=td
+        cm=run_compartment_matched(master, masks, a, combined=True)
+        need=["compartment_matched_results.tsv","forest_effect_sizes_cmatched.png",
+              "violin_cmatched_b10_stableA.png","violin_cmatched_b10_stableB.png",
+              "violin_cmatched_parental_stableA.png","violin_cmatched_parental_stableB.png",
+              "violin_cmatched_combined_stableA.png","violin_cmatched_combined_stableB.png"]
+        missing=[f for f in need if not os.path.exists(os.path.join(td,f))]
+        assert not missing, f"missing cmatched outputs: {missing}"
+        assert len(cm)==6 and set(cm["cell_line"])=={"B10","Parental"}
+    print("    compartment-matched: 6 contrasts + 8 outputs OK, pairing verified")
 
 
 def build_parser():
     p=argparse.ArgumentParser(description="Does UNC1999 selectively erase migration-acquired H3K27me3? "
-                              "(scale-free between-set enrichment + anomaly diagnostics).",
+                              "(scale-free between-set enrichment + compartment-matched selectivity + anomaly diagnostics).",
                               formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--sample-sheet"); p.add_argument("--norm", choices=["cpm","greenlist"], default="cpm")
@@ -899,6 +1210,15 @@ def build_parser():
                         "collapse, re-run the headline with --baseline-match residual.")
     p.add_argument("--n-ref-bins", type=int, default=50,
                    help="quantile knots for the stable baseline trend (residual mode and D3 diagnostic)")
+    p.add_argument("--compartment-matched", action=argparse.BooleanOptionalAction, default=True,
+                   help="also run the COMPARTMENT-MATCHED selectivity analysis (each target vs same-compartment "
+                        "stable in the arm being measured) into its own forest + 4 single-arm violins + 2 combined "
+                        "panels. --no-compartment-matched to skip. This is the selectivity-clean companion to the "
+                        "compartment-MIXED headline contrast, and removes the dUNC~PC1 gradient D5 flags.")
+    p.add_argument("--cmatched-combined", action=argparse.BooleanOptionalAction, default=True,
+                   help="within the compartment-matched block, also emit the 2 COMBINED panels (both arms on one "
+                        "axis, each keeping its own per-arm stable reference; within-arm δ only). --no-cmatched-combined "
+                        "to emit just the 4 single-arm violins.")
     p.add_argument("--diagnose", action=argparse.BooleanOptionalAction, default=True,
                    help="run the anomaly diagnostics suite (D1-D5) into <outdir>/diagnostics/. --no-diagnose to skip.")
     p.add_argument("--n-strata", type=int, default=10); p.add_argument("--n-perm", type=int, default=1000)
