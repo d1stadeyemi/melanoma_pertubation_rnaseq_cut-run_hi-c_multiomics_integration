@@ -28,14 +28,16 @@
 # ---------------------------------------------------------------------------
 # QUICK EXAMPLES
 # ---------------------------------------------------------------------------
-# 1) Simplest: two groups, replicates given inline, grch38, Parental as control
+# 1) Simplest: keyword-scan the counts dir; grch38; Parental as control.
+#    Every replicate whose folder name contains "bottom10"/"parental" is picked.
 #    Rscript rnaseq_deseq2_dge.R \
 #        --ref grch38 \
 #        --counts-dir /lustre/.../rnaseq_output \
-#        --group1 Bottom10 --group1-samples B10_r1,B10_r2,B10_r3 \
-#        --group2 Parental --group2-samples Par_r1,Par_r2,Par_r3 \
+#        --group1 Bottom10 --group2 Parental \
 #        --control Parental \
 #        --outdir results/exploratory/deseq2_B10_vs_Parental
+#    # optional: assert 3 reps each and set clean labels
+#    #   --group1-reps rep1,rep2,rep3 --group2-reps rep1,rep2,rep3
 #
 # 2) Reproducible: drive everything from a sample sheet, add a batch covariate
 #    Rscript rnaseq_deseq2_dge.R \
@@ -122,11 +124,20 @@ INPUT — counts location
   --counts-suffix <STR>       Count-file suffix. Default: _genecounts.tsv
 
 INPUT — group assignment (choose ONE of A or B)
-  A) Sample sheet (recommended, reproducible):
+  A) Keyword scanning (quickest; pairs with rnaseq_fastq_to_counts.sh output):
+     --group1 <KEYWORD>       Case-insensitive substring matched against the
+     --group2 <KEYWORD>       replicate names discovered in --counts-dir. Every
+                              count file whose name contains the keyword joins
+                              that group; the keyword is also the group label.
+                              (A file matching BOTH keywords is an error — make
+                              them more specific. Sample sheet = surgical control.)
+     --group1-reps <a,b,...>  OPTIONAL. Its LENGTH asserts how many replicates
+     --group2-reps <a,b,...>  must be found (errors on mismatch); the labels
+                              become the column/figure labels as <group>_<label>,
+                              mapped to the discovered files in sorted order.
+                              Omit to use the discovered replicate names as labels.
+  B) Sample sheet (most control / multi-factor designs):
      --samplesheet <CSV/TSV>  Columns: sample,condition[,batch,path,...]
-  B) Inline two-group mode:
-     --group1 <NAME> --group1-samples <s1,s2,...>
-     --group2 <NAME> --group2-samples <s3,s4,...>
 
 CONTRAST / DESIGN
   --control <NAME>            Reference level = denominator of the log2 fold change
@@ -193,11 +204,20 @@ if (isTRUE(opt[["help"]]) || isTRUE(opt[["h"]]) || length(raw) == 0) {
 .known_keys <- c(
   "ref","gtf","no-annotation","strip-gene-version","id-map",
   "counts-dir","counts-suffix","samplesheet",
-  "group1","group2","group1-samples","group2-samples",
+  "group1","group2","group1-reps","group2-reps",
   "control","batch","design","contrast-name",
   "alpha","lfc-threshold","alt-hypothesis","shrink","fit-type",
   "min-count","min-samples","transform","top-n","biotype-filter",
   "outdir","threads","seed","dry-run","help","h","rlib")
+# Friendly message for the pre-scan flag names that were renamed
+for (.old in c("group1-samples","group2-samples")) if (!is.null(opt[[.old]])) {
+  .grp <- sub("-samples","",.old)
+  message("ERROR: --", .old, " no longer exists. Group membership is now auto-scanned from ",
+          "the --", .grp, " keyword (case-insensitive substring of the replicate names). ",
+          "Use --", sub("samples","reps",.old), " only to (optionally) assert the replicate ",
+          "count and set figure labels.")
+  quit(status = 2)
+}
 .unknown <- setdiff(names(opt), .known_keys)
 if (length(.unknown) > 0) {
   message("ERROR: unknown option(s): ", paste0("--", .unknown, collapse = ", "),
@@ -267,6 +287,54 @@ if (!alt_hyp %in% c("greaterAbs","lessAbs","greater","less")) { message("ERROR: 
 ## ---------------------------------------------------------------------------
 ## 1b. BUILD THE SAMPLE TABLE (coldata) from sheet OR inline groups
 ## ---------------------------------------------------------------------------
+# Discover every htseq count file under --counts-dir. Handles the standard
+# rnaseq_fastq_to_counts.sh layout  <dir>/<rep>/<rep><suffix>  and a flat
+# <dir>/<rep><suffix>. The replicate NAME is the basename minus the suffix.
+discover_counts <- function(counts_dir, suffix) {
+  files <- unique(c(
+    Sys.glob(file.path(counts_dir, "*", paste0("*", suffix))),
+    Sys.glob(file.path(counts_dir, paste0("*", suffix)))
+  ))
+  if (length(files) == 0)
+    return(data.frame(name = character(0), path = character(0), stringsAsFactors = FALSE))
+  nm <- sub(paste0(suffix, "$"), "", basename(files))
+  d  <- data.frame(name = nm, path = files, stringsAsFactors = FALSE)
+  d[!duplicated(d$name), , drop = FALSE]      # one row per replicate name
+}
+
+# Scanning mode: --group1/--group2 are case-insensitive substring keywords matched
+# against discovered replicate names. --group*-reps optionally assert the replicate
+# COUNT and relabel the columns/figures (as <group>_<label>).
+build_scan <- function() {
+  g1 <- getc("group1"); g2 <- getc("group2")
+  if (is.null(g1) || is.null(g2))
+    stop("Provide either --samplesheet OR both --group1 and --group2 (scan keywords).")
+  disc <- discover_counts(counts_dir, counts_suffix)
+  if (nrow(disc) == 0)
+    stop("no count files (*", counts_suffix, ") found under --counts-dir: ", counts_dir)
+  pick <- function(kw) disc[grepl(tolower(kw), tolower(disc$name), fixed = TRUE), , drop = FALSE]
+  m1 <- pick(g1); m2 <- pick(g2)
+  if (nrow(m1) == 0) stop("no count files matched --group1 '", g1, "'. Discovered: ", paste(disc$name, collapse = ", "))
+  if (nrow(m2) == 0) stop("no count files matched --group2 '", g2, "'. Discovered: ", paste(disc$name, collapse = ", "))
+  ov <- intersect(m1$name, m2$name)
+  if (length(ov) > 0)
+    stop("these replicates matched BOTH groups (use more specific --group keywords): ", paste(ov, collapse = ", "))
+  m1 <- m1[order(m1$name), , drop = FALSE]; m2 <- m2[order(m2$name), , drop = FALSE]
+  lab <- function(m, reps, gg, flag) {
+    if (!is.null(reps) && length(reps) != nrow(m))
+      stop(sprintf("--%s lists %d label(s) but %d count file(s) matched '%s': %s",
+                   flag, length(reps), nrow(m), gg, paste(m$name, collapse = ", ")))
+    m$condition <- gg
+    m$sample    <- if (is.null(reps)) m$name else make.unique(paste(gg, reps, sep = "_"))
+    m
+  }
+  m1 <- lab(m1, split_csv(getc("group1-reps")), g1, "group1-reps")
+  m2 <- lab(m2, split_csv(getc("group2-reps")), g2, "group2-reps")
+  both <- rbind(m1, m2)
+  data.frame(sample = both$sample, condition = both$condition,
+             count_file = both$path, source_name = both$name, stringsAsFactors = FALSE)
+}
+
 build_coldata <- function() {
   if (!is.null(samplesheet)) {
     if (!file.exists(samplesheet)) stop("--samplesheet not found: ", samplesheet)
@@ -279,16 +347,7 @@ build_coldata <- function() {
     df$condition <- as.character(df$condition)
     return(df)
   }
-  # inline two-group mode
-  g1  <- getc("group1"); g2 <- getc("group2")
-  s1  <- split_csv(getc("group1-samples")); s2 <- split_csv(getc("group2-samples"))
-  if (is.null(g1) || is.null(g2) || is.null(s1) || is.null(s2))
-    stop("Provide either --samplesheet OR (--group1/--group1-samples and --group2/--group2-samples).")
-  data.frame(
-    sample    = c(s1, s2),
-    condition = c(rep(g1, length(s1)), rep(g2, length(s2))),
-    stringsAsFactors = FALSE
-  )
+  build_scan()   # keyword-scanning mode
 }
 
 coldata <- tryCatch(build_coldata(), error = function(e) { message("ERROR: ", conditionMessage(e)); quit(status = 2) })
@@ -363,10 +422,13 @@ resolve_count_file <- function(sample, path_col = NULL) {
   if (length(g2) >= 1) return(g2[1])
   NA_character_
 }
-path_col_vals <- if ("path" %in% colnames(coldata)) coldata$path else rep(NA_character_, nrow(coldata))
-coldata$count_file <- vapply(seq_len(nrow(coldata)),
-                             function(i) resolve_count_file(coldata$sample[i], path_col_vals[i]),
-                             character(1))
+# Scanning mode already populated count_file; only resolve for sample-sheet mode.
+if (!"count_file" %in% colnames(coldata)) {
+  path_col_vals <- if ("path" %in% colnames(coldata)) coldata$path else rep(NA_character_, nrow(coldata))
+  coldata$count_file <- vapply(seq_len(nrow(coldata)),
+                               function(i) resolve_count_file(coldata$sample[i], path_col_vals[i]),
+                               character(1))
+}
 missing_files <- coldata$sample[is.na(coldata$count_file)]
 if (length(missing_files) > 0) {
   message("ERROR: could not locate count files for: ", paste(missing_files, collapse = ", "))
@@ -396,7 +458,12 @@ cfg <- data.frame(
   stringsAsFactors = FALSE)
 save_table(cfg, "00_run_config.csv")
 save_table(coldata, "01_sample_table.csv")
-logmsg("resolved ", nrow(coldata), " samples across conditions: ", paste(conds, collapse = ", "))
+logmsg("resolved ", nrow(coldata), " replicates across conditions: ", paste(conds, collapse = ", "))
+for (cc in conds) {
+  mm <- coldata[coldata$condition == cc, , drop = FALSE]
+  src <- if ("source_name" %in% colnames(mm)) mm$source_name else mm$sample
+  logmsg("  group '", cc, "' (", nrow(mm), " reps): ", paste(src, collapse = ", "))
+}
 
 if (dry_run) {
   logmsg("--dry-run set: configuration validated, all count files found. Stopping before DESeq2.")

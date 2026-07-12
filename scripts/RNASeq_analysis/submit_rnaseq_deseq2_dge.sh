@@ -2,14 +2,14 @@
 #SBATCH -J deseq2_dge
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=00-02:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=00-23:00:00
 #SBATCH -A ACF-UTK0009
 #SBATCH --partition=condo-rmccord
 #SBATCH --qos=condo
-#SBATCH --error=deseq2_dge-%j-err.txt
-#SBATCH --output=deseq2_dge-%j-out.txt
+#SBATCH --error=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/errors/deseq2-%x-%j.err
+#SBATCH --output=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/jobs/deseq2-%x-%j.out
 
 # Fail fast: exit on error, undefined variable, or any failed command in a pipe
 set -euo pipefail
@@ -29,14 +29,15 @@ set -euo pipefail
 # The key point you asked about: --counts-dir is simply the OUTPUT DIRECTORY of
 # your rnaseq_fastq_to_counts.sh run.
 #
-# USAGE (inline two-group mode):
+# USAGE (keyword-scanning mode — group membership auto-scanned from --counts-dir):
 #   sbatch submit_rnaseq_deseq2_dge.sh \
 #       --ref grch38 \
 #       --counts-dir /lustre/.../rnaseq_output \
-#       --group1 Bottom10 --group1-samples B10_r1,B10_r2,B10_r3 \
-#       --group2 Parental --group2-samples Par_r1,Par_r2,Par_r3 \
+#       --group1 Bottom10 --group2 Parental \
 #       --control Parental \
 #       --outdir results/exploratory/deseq2_B10_vs_Parental
+#   # optional replicate-count assertion + clean labels:
+#   #   --group1-reps rep1,rep2,rep3 --group2-reps rep1,rep2,rep3
 #
 # USAGE (sample-sheet mode, e.g. with a batch covariate):
 #   sbatch submit_rnaseq_deseq2_dge.sh \

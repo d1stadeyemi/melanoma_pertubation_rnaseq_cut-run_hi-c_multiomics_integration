@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J RNA-Seq_pipeline
+#SBATCH -J rnaseq
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 ###############################################################################
-# RNA-seq pipeline  (one sample = one paired-end R1/R2 set)
+# rnaseq_fastq_to_counts.sh   (one sample = one paired-end R1/R2 set)
 #
 # This script replaces the old hg19-only and grch38-only scripts.
 # You choose the reference genome with the required --ref flag.
@@ -23,13 +23,18 @@ set -euo pipefail
 # Stages: adapter trim -> quality trim -> STAR align -> sort/index
 #         -> htseq count -> CPM bigwig
 #
-# Output layout (each sample gets its own clean directory):
-#   <outdir>/<sample>/
-#       <sample>_genecounts.tsv     raw counts (DESeq2 input; NOT normalized)
-#       <sample>_sorted.bam (+.bai) coordinate-sorted alignments
-#       <sample>.cpm.norm.bw        CPM-normalized track for IGV
-#       <sample>_Log.final.out      STAR mapping summary (+ other STAR logs)
-#       intermediates/              trimmed fastqs + SAM (deletable via flags)
+# Output layout (each fastq PAIR gets its own clean directory):
+#   <outdir>/<replicate>/
+#       <replicate>_genecounts.tsv     raw counts (DESeq2 input; NOT normalized)
+#       <replicate>_sorted.bam (+.bai) coordinate-sorted alignments
+#       <replicate>.cpm.norm.bw        CPM-normalized track for IGV
+#       <replicate>_Log.final.out      STAR mapping summary (+ other STAR logs)
+#       trimmed_fastqs/                trimmed fastqs   (removable via --rm-trimmed-fastqs)
+#       sam/                           STAR SAM         (removable via --rm-sam)
+#
+# The <replicate> directory name is derived from the R1 file name by removing
+# the forward-read keyword (default R1_001) and the extension. Change the
+# keyword with --fwd-keyword if your fastqs are named differently.
 ###############################################################################
 
 # Remember the folder the job was submitted from, BEFORE we cd anywhere.
@@ -42,14 +47,15 @@ SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 usage() {
 cat <<'EOF'
 ------------------------------------------------------------------------------
-RNA-seq pipeline  —  run ONE paired-end sample (R1 + R2)
+rnaseq_fastq_to_counts.sh  —  run ONE paired-end sample (R1 + R2)
 ------------------------------------------------------------------------------
 
 USAGE:
   sbatch rnaseq_fastq_to_counts.sh --ref <hg19|grch38> \
          --fastq-dir <FOLDER> \
          --r1 <SAMPLE_R1_001.fastq.gz> --r2 <SAMPLE_R2_001.fastq.gz> \
-         [--outdir <FOLDER>] [--rm-trimmed-fastqs] [--rm-sam]
+         [--outdir <FOLDER>] [--fwd-keyword R1_001] \
+         [--rm-trimmed-fastqs] [--rm-sam]
 
 REQUIRED:
   --ref <hg19|grch38>   Reference genome. Must be exactly hg19 OR grch38.
@@ -61,18 +67,21 @@ OPTIONAL:
   --outdir <FOLDER>     Where to write results.
                         If you leave this out, results are written into the
                         folder you were in when you submitted the job.
-  --rm-trimmed-fastqs   Delete trimmed fastqs when finished (saves disk space).
-  --rm-sam              Delete the large SAM file when finished (saves disk space).
+  --fwd-keyword <STR>   Token marking the forward read in the file name; it is
+                        stripped to name the output directory. Default: R1_001
+                        (e.g. use "R1" if your files are Sample_rep1_R1.fastq.gz).
+  --rm-trimmed-fastqs   Delete the trimmed_fastqs/ contents when finished.
+  --rm-sam              Delete the sam/ contents when finished (saves disk space).
   -h, --help            Show this help and exit.
 
 EXAMPLES:
   # hg19; results land in the current folder (no --outdir given)
-  sbatch run_rnaseq_pipeline.sh --ref hg19 \
+  sbatch rnaseq_fastq_to_counts.sh --ref hg19 \
          --fastq-dir /lustre/.../fastqs \
          --r1 Sample1_R1_001.fastq.gz --r2 Sample1_R2_001.fastq.gz
 
   # grch38; results in a chosen folder; clean up intermediates afterward
-  sbatch run_rnaseq_pipeline.sh --ref grch38 \
+  sbatch rnaseq_fastq_to_counts.sh --ref grch38 \
          --fastq-dir /lustre/.../fastqs \
          --r1 Sample1_R1_001.fastq.gz --r2 Sample1_R2_001.fastq.gz \
          --outdir /lustre/.../rnaseq_output --rm-trimmed-fastqs --rm-sam
@@ -88,6 +97,7 @@ FASTQ_DIR=""
 R1=""
 R2=""
 OUTDIR=""
+FWD_KEYWORD="R1_001"
 RM_TRIMMED=false
 RM_SAM=false
 
@@ -96,11 +106,12 @@ need_val() { [[ $# -ge 2 && "${2:0:1}" != "-" ]] || { echo "ERROR: option '$1' n
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --ref)                    need_val "$@"; REF="$2";       shift 2 ;;
-        --fastq-dir|--fastqdir)   need_val "$@"; FASTQ_DIR="$2"; shift 2 ;;
-        --r1|--R1)                need_val "$@"; R1="$2";        shift 2 ;;
-        --r2|--R2)                need_val "$@"; R2="$2";        shift 2 ;;
-        --outdir|--output-dir)    need_val "$@"; OUTDIR="$2";    shift 2 ;;
+        --ref)                    need_val "$@"; REF="$2";         shift 2 ;;
+        --fastq-dir|--fastqdir)   need_val "$@"; FASTQ_DIR="$2";   shift 2 ;;
+        --r1|--R1)                need_val "$@"; R1="$2";          shift 2 ;;
+        --r2|--R2)                need_val "$@"; R2="$2";          shift 2 ;;
+        --outdir|--output-dir)    need_val "$@"; OUTDIR="$2";      shift 2 ;;
+        --fwd-keyword|--fwd)      need_val "$@"; FWD_KEYWORD="$2"; shift 2 ;;
         --rm-trimmed-fastqs|--rm_trimmed_fastqs) RM_TRIMMED=true; shift ;;
         --rm-sam|--rm_sam)                       RM_SAM=true;     shift ;;
         -h|--help)                usage; exit 0 ;;
@@ -175,16 +186,22 @@ CONDA_ENV=/lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-
 THREADS=${SLURM_CPUS_PER_TASK:-20}
 
 # ---------------------------------------------------------------------------
-# Derive sample name and set up a per-sample output directory
+# Derive the replicate (directory) name from R1 by removing the forward-read
+# keyword + extension, then trimming any trailing separator.
+#   Parental_rep1_R1_001.fastq.gz  --(fwd=R1_001)-->  Parental_rep1
 # ---------------------------------------------------------------------------
-Sample=$(basename "${R1}" | sed 's/_R1_001\.fastq\.gz//')
+noext=$(echo "${R1}" | sed -E 's/\.(fastq|fq)\.gz$//; s/\.(fastq|fq)$//')
+Sample=$(echo "${noext}" | sed -E "s/(.*)[._-]?${FWD_KEYWORD}.*/\1/" | sed -E 's/[._-]+$//')
+[[ -n "${Sample}" ]] || Sample="${noext}"   # fallback if keyword stripped everything
+
 SampleDir="${OUTDIR}/${Sample}"
-InterDir="${SampleDir}/intermediates"
-mkdir -p "${SampleDir}" "${InterDir}"
+TrimDir="${SampleDir}/trimmed_fastqs"   # trimmed fastqs live here (removable)
+SamDir="${SampleDir}/sam"               # STAR SAM lives here    (removable)
+mkdir -p "${SampleDir}" "${TrimDir}" "${SamDir}"
 cd "${SampleDir}"
 
 echo "============================================================"
-echo "Sample    : ${Sample}"
+echo "Replicate : ${Sample}"
 echo "Reference : ${REF_LC}"
 echo "Started   : $(date)"
 echo "Node      : $(hostname)"
@@ -193,18 +210,18 @@ echo "Fastq dir : ${FASTQ_DIR}"
 echo "Output    : ${SampleDir}"
 echo "Genome    : ${GENOME_DIR}"
 echo "GTF       : ${GTF}"
-echo "Flags     : rm_trimmed=${RM_TRIMMED}  rm_sam=${RM_SAM}"
+echo "Flags     : fwd_keyword=${FWD_KEYWORD}  rm_trimmed=${RM_TRIMMED}  rm_sam=${RM_SAM}"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
-# Filenames (intermediates in subdir; final outputs in the sample dir)
+# Filenames (trimmed fastqs -> trimmed_fastqs/ ; SAM -> sam/ ; finals in dir)
 # ---------------------------------------------------------------------------
-AdaptTrim1=${InterDir}/${Sample}_R1_adapter.fastq.gz
-AdaptTrim2=${InterDir}/${Sample}_R2_adapter.fastq.gz
-QualTrim1=${InterDir}/${Sample}_R1_qc.fastq.gz
-QualTrim2=${InterDir}/${Sample}_R2_qc.fastq.gz
+AdaptTrim1=${TrimDir}/${Sample}_R1_adapter.fastq.gz
+AdaptTrim2=${TrimDir}/${Sample}_R2_adapter.fastq.gz
+QualTrim1=${TrimDir}/${Sample}_R1_qc.fastq.gz
+QualTrim2=${TrimDir}/${Sample}_R2_qc.fastq.gz
 StarPrefix=${Sample}_
-SamFile=${InterDir}/${Sample}_Aligned.out.sam
+SamFile=${SamDir}/${Sample}_Aligned.out.sam
 SortedBam=${Sample}_sorted.bam
 Counts=${Sample}_genecounts.tsv
 BigWig=${Sample}.cpm.norm.bw
@@ -239,7 +256,7 @@ STAR --runThreadN ${THREADS} \
      --outFilterScoreMinOverLread 0.2 \
      --outFilterMatchNminOverLread 0.2 \
      --outFileNamePrefix "${StarPrefix}"
-# STAR writes <prefix>Aligned.out.sam into the cwd; move it into intermediates/
+# STAR writes <prefix>Aligned.out.sam into the cwd; move it into sam/
 mv "${StarPrefix}Aligned.out.sam" "${SamFile}"
 
 # ---------------------------------------------------------------------------
@@ -281,8 +298,9 @@ if [[ "${RM_SAM}" == true ]]; then
     echo ">> removing SAM"
     rm -f "${SamFile}"
 fi
-# remove intermediates/ if it ended up empty
-rmdir "${InterDir}" 2>/dev/null || true
+# remove trimmed_fastqs/ and sam/ if they ended up empty
+rmdir "${TrimDir}" 2>/dev/null || true
+rmdir "${SamDir}"  2>/dev/null || true
 
 echo "============================================================"
 echo "Finished: ${Sample} at $(date)"
