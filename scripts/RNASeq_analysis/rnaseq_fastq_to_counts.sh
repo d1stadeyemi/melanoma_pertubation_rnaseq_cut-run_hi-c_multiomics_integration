@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J RNA-Seq_pipeline
+#SBATCH -J rnaseq
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -8,8 +8,8 @@
 #SBATCH -A ACF-UTK0009
 #SBATCH --partition=condo-rmccord
 #SBATCH --qos=condo
-#SBATCH --error=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/errors/%x-%j-err.txt
-#SBATCH --output=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/jobs/%x-%j-out.txt
+#SBATCH --error=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/errors/%x-%j.err
+#SBATCH --output=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/jobs/%x-%j.out
 
 # Fail fast: exit on error, undefined variable, or any failed command in a pipe
 set -euo pipefail
