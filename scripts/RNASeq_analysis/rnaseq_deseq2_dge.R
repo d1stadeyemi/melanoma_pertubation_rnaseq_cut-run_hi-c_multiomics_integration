@@ -70,7 +70,7 @@ suppressWarnings(suppressMessages({
 ## ===========================================================================
 # Supports:  --key value   |   --key=value   |   --boolean-flag
 # Unknown keys are rejected with a clear message. Booleans are listed below.
-.bool_flags <- c("help", "h", "no-annotation", "strip-gene-version", "dry-run")
+.bool_flags <- c("help", "h", "no-annotation", "strip-gene-version", "dry-run", "collapse-to-gene")
 
 parse_args <- function(args) {
   opt <- list()
@@ -173,6 +173,12 @@ ANNOTATION
                               with columns  gene_id,gene_name  (kgID -> geneSymbol).
   --no-annotation             Skip gene-symbol annotation entirely.
   --strip-gene-version        Strip ".NN" version from Ensembl gene IDs (both counts & GTF).
+  --collapse-to-gene          Also run a GENE-LEVEL analysis: transcript-model counts
+                              are summed per gene symbol. Outputs split into
+                              <outdir>/transcript_level/ and <outdir>/gene_level/.
+                              (Most useful for hg19 knownGene, whose IDs are
+                              transcript models; for grch38/gencode the counts are
+                              already gene-level so the two levels are near-identical.)
 
 MISC
   --outdir <DIR>              Output directory. Default: ./deseq2_out
@@ -208,7 +214,7 @@ if (isTRUE(opt[["help"]]) || isTRUE(opt[["h"]]) || length(raw) == 0) {
   "control","batch","design","contrast-name",
   "alpha","lfc-threshold","alt-hypothesis","shrink","fit-type",
   "min-count","min-samples","transform","top-n","biotype-filter",
-  "outdir","threads","seed","dry-run","help","h","rlib")
+  "outdir","threads","seed","dry-run","help","h","rlib","collapse-to-gene")
 # Friendly message for the pre-scan flag names that were renamed
 for (.old in c("group1-samples","group2-samples")) if (!is.null(opt[[.old]])) {
   .grp <- sub("-samples","",.old)
@@ -276,6 +282,7 @@ contrast_name <- getc("contrast-name")
 threads       <- geti("threads", { s <- Sys.getenv("SLURM_CPUS_PER_TASK"); if (nzchar(s)) as.integer(s) else 1L })
 seed          <- geti("seed", 1L)
 dry_run       <- getb("dry-run")
+collapse_gene <- getb("collapse-to-gene")
 
 if (is.null(counts_dir)) { message("ERROR: --counts-dir is required."); quit(status = 2) }
 if (!dir.exists(counts_dir)) { message("ERROR: --counts-dir not found: ", counts_dir); quit(status = 2) }
@@ -372,8 +379,12 @@ if (is.null(contrast_name)) contrast_name <- paste0(treat, "_vs_", control)
 ## ===========================================================================
 ## 2. OUTPUT SCAFFOLDING + LOGGING
 ## ===========================================================================
-fig_dir <- file.path(outdir, "figures")
-tab_dir <- file.path(outdir, "tables")
+# When --collapse-to-gene is set, the transcript-level analysis lives in a
+# transcript_level/ subdir (gene_level/ is added later); otherwise everything
+# goes straight into <outdir> exactly as before.
+base_dir <- if (isTRUE(collapse_gene)) file.path(outdir, "transcript_level") else outdir
+fig_dir <- file.path(base_dir, "figures")
+tab_dir <- file.path(base_dir, "tables")
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -384,20 +395,38 @@ logmsg <- function(...) {
   cat(line, "\n"); cat(line, "\n", file = log_con, append = TRUE)
 }
 save_table <- function(df, name) {
+  df <- as.data.frame(df, stringsAsFactors = FALSE, optional = TRUE)
+  # Flatten any list columns (e.g. multi-value annotation fields) so write.csv
+  # never hits "unimplemented type 'list' in 'EncodeElement'".
+  listcols <- names(df)[vapply(df, is.list, logical(1))]
+  for (j in listcols)
+    df[[j]] <- vapply(df[[j]], function(x) paste(as.character(x), collapse = ";"), character(1))
+  if (length(listcols) > 0)
+    logmsg("note: flattened list column(s) [", paste(listcols, collapse = ", "), "] in ", name)
   path <- file.path(tab_dir, name)
   write.csv(df, path, row.names = FALSE)
   logmsg("table  -> ", path)
 }
 # Save a base-graphics plot to BOTH pdf (vector) and png (quick view)
 save_base <- function(name, fun, width = 7, height = 6) {
-  pdf(file.path(fig_dir, paste0(name, ".pdf")), width = width, height = height); fun(); dev.off()
-  png(file.path(fig_dir, paste0(name, ".png")), width = width*150, height = height*150, res = 150); fun(); dev.off()
-  logmsg("figure -> ", name, ".{pdf,png}")
+  tryCatch({
+    pdf(file.path(fig_dir, paste0(name, ".pdf")), width = width, height = height); fun(); dev.off()
+    png(file.path(fig_dir, paste0(name, ".png")), width = width*150, height = height*150, res = 150); fun(); dev.off()
+    logmsg("figure -> ", name, ".{pdf,png}")
+  }, error = function(e) {
+    while (grDevices::dev.cur() > 1L) grDevices::dev.off()   # close any open device
+    logmsg("WARNING: figure '", name, "' failed (", conditionMessage(e), "); continuing.")
+  })
 }
 save_gg <- function(name, gg, width = 7, height = 6) {
-  ggplot2::ggsave(file.path(fig_dir, paste0(name, ".pdf")), gg, width = width, height = height)
-  ggplot2::ggsave(file.path(fig_dir, paste0(name, ".png")), gg, width = width, height = height, dpi = 150)
-  logmsg("figure -> ", name, ".{pdf,png}")
+  tryCatch({
+    ggplot2::ggsave(file.path(fig_dir, paste0(name, ".pdf")), gg, width = width, height = height)
+    ggplot2::ggsave(file.path(fig_dir, paste0(name, ".png")), gg, width = width, height = height, dpi = 150)
+    logmsg("figure -> ", name, ".{pdf,png}")
+  }, error = function(e) {
+    while (grDevices::dev.cur() > 1L) grDevices::dev.off()
+    logmsg("WARNING: figure '", name, "' failed (", conditionMessage(e), "); continuing.")
+  })
 }
 has <- function(pkg) requireNamespace(pkg, quietly = TRUE)
 
@@ -531,11 +560,15 @@ logmsg("count matrix: ", nrow(cts), " genes x ", ncol(cts), " samples")
 save_base("02_htseq_assignment_bars", function() {
   mat <- t(as.matrix(qc[, c("assigned", sub("^__","",special_names))]))
   colnames(mat) <- qc$sample
-  par(mar = c(9,5,3,8), xpd = TRUE)
-  bp <- barplot(mat, col = seq_len(nrow(mat)), las = 2, ylab = "reads",
-                main = "htseq read assignment per sample")
-  legend("topright", inset = c(-0.22,0), legend = rownames(mat),
-         fill = seq_len(nrow(mat)), cex = 0.7)
+  # meaningful palette: assigned = green; the concerning multimappers red; rest muted
+  asg_cols <- c(assigned = "#3B8C4E", no_feature = "#F2A65A", ambiguous = "#F2CC8F",
+                too_low_aQual = "#BDBDBD", not_aligned = "#7F9DB9",
+                alignment_not_unique = "#C1483B")[rownames(mat)]
+  par(mar = c(9,5,3,9), xpd = TRUE)
+  barplot(mat, col = asg_cols, border = NA, las = 2, ylab = "reads",
+          main = "htseq read assignment per sample")
+  legend("topright", inset = c(-0.30,0), legend = rownames(mat),
+         fill = asg_cols, border = NA, bty = "n", cex = 0.75)
 }, width = 9, height = 6)
 
 save_base("03_library_size", function() {
@@ -682,6 +715,22 @@ if (do_annotate) {
   }
 }
 
+# Coerce annotation columns to ATOMIC character. rtracklayer::import and
+# AnnotationDbi::mapIds can return list / CharacterList columns; those break both
+# write.csv AND ggplot facet/label sorting (e.g. the top-gene count facets and
+# the top-DEG heatmap rownames). Fixing it here fixes every downstream use.
+if (!is.null(ann)) {
+  atomize <- function(x) {
+    if (is.list(x)) vapply(x, function(v) if (length(v)) as.character(v)[[1]] else NA_character_, character(1))
+    else as.character(x)
+  }
+  for (.c in intersect(c("gene_id","gene_name","biotype","chrom"), names(ann))) ann[[.c]] <- atomize(ann[[.c]])
+  # Never leave gene_name empty/NA: fall back to the gene_id so no figure or
+  # table ever shows "NA" (e.g. the few uc IDs with no UCSC symbol).
+  if ("gene_name" %in% names(ann))
+    ann$gene_name <- ifelse(is.na(ann$gene_name) | !nzchar(ann$gene_name), ann$gene_id, ann$gene_name)
+}
+
 if (!is.null(ann)) {
   n_match <- sum(rownames(cts) %in% ann$gene_id)
   matched_ann <- ann[ann$gene_id %in% rownames(cts), , drop = FALSE]
@@ -694,9 +743,9 @@ if (!is.null(ann)) {
                        symbols_available = sym_frac > 0.1,
                        frac_with_symbol = round(sym_frac, 3))
   save_table(rep_df, "05_annotation_report.csv")
-  if ("biotype" %in% colnames(ann)) {
-    bt <- as.data.frame(table(ann$biotype[ann$gene_id %in% rownames(cts)]))
-    colnames(bt) <- c("biotype","n_genes"); if (nrow(bt) > 0) save_table(bt, "05_biotype_breakdown.csv")
+  if ("biotype" %in% colnames(ann) && any(!is.na(ann$biotype))) {
+    bt <- as.data.frame(table(ann$biotype[ann$gene_id %in% rownames(cts)]), stringsAsFactors = FALSE)
+    if (ncol(bt) == 2 && nrow(bt) > 0) { colnames(bt) <- c("biotype","n_genes"); save_table(bt, "05_biotype_breakdown.csv") }
   }
   logmsg("annotation: ", n_match, "/", nrow(cts), " gene IDs matched; symbols on ",
          round(100*sym_frac), "% of matched genes")
@@ -713,14 +762,28 @@ if (!is.null(ann)) {
 # Optional biotype filter (before modelling) --------------------------------
 if (!is.null(biotype_filt)) {
   if (is.null(ann)) { message("ERROR: --biotype-filter requires annotation."); quit(status = 2) }
-  keep_bt <- rownames(cts) %in% ann$gene_id[ann$biotype == biotype_filt]
+  if (!("biotype" %in% colnames(ann)) || !any(!is.na(ann$biotype))) {
+    message("ERROR: --biotype-filter requested but the annotation carries no biotype ",
+            "(e.g. hg19 UCSC knownGene). Use grch38, or drop --biotype-filter."); quit(status = 2)
+  }
+  keep_bt <- rownames(cts) %in% ann$gene_id[!is.na(ann$biotype) & ann$biotype == biotype_filt]
+  if (sum(keep_bt) == 0) { message("ERROR: --biotype-filter '", biotype_filt, "' matched 0 genes."); quit(status = 2) }
   logmsg("biotype filter '", biotype_filt, "': keeping ", sum(keep_bt), "/", nrow(cts), " genes")
   cts <- cts[keep_bt, , drop = FALSE]
 }
 
 ## ===========================================================================
-## 5. BUILD DESeqDataSet, PRE-FILTER, RUN DESeq
+## 5-9. ANALYSIS ENGINE  (run once per level: transcript, and gene if collapsing)
+##      cts/ann are parameters; save_table/save_base/save_gg write into level_dir.
 ## ===========================================================================
+dge_and_figures <- function(cts, ann, level_dir, level_lab) {
+fig_dir <<- file.path(level_dir, "figures")
+tab_dir <<- file.path(level_dir, "tables")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+logmsg("==== analysis level: ", level_lab, "  ->  ", level_dir, " ====")
+
+## 5. BUILD DESeqDataSet, PRE-FILTER, RUN DESeq
 coldata$condition <- factor(coldata$condition)
 coldata$condition <- relevel(coldata$condition, ref = control)   # control = reference
 if (!is.null(batch_col)) coldata[[batch_col]] <- factor(coldata[[batch_col]])
@@ -806,9 +869,18 @@ save_table(pca, "11_pca_coordinates.csv")
 if (has("ggplot2")) {
   aes_shape <- if (!is.null(batch_col)) ggplot2::aes(PC1, PC2, color = condition, shape = .data[[batch_col]]) else ggplot2::aes(PC1, PC2, color = condition)
   g <- ggplot2::ggplot(pca, aes_shape) + ggplot2::geom_point(size = 4) +
-       ggplot2::geom_text(ggplot2::aes(label = name), vjust = -1, size = 3, show.legend = FALSE) +
        ggplot2::xlab(paste0("PC1: ", pv[1], "% var")) + ggplot2::ylab(paste0("PC2: ", pv[2], "% var")) +
-       ggplot2::coord_fixed() + ggplot2::theme_bw() + ggplot2::ggtitle(paste0("PCA (", ifelse(do_vst,"VST","rlog"), ")"))
+       ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.18)) +
+       ggplot2::theme_bw() + ggplot2::ggtitle(paste0("PCA (", ifelse(do_vst,"VST","rlog"), ")"))
+  # coord_fixed() dropped on purpose: with PC1 ~96% vs PC2 ~3% it squashes the
+  # panel into an unreadable strip and clips labels; the axis titles report the
+  # variance split, so the scale honesty is preserved.
+  if (has("ggrepel")) {
+    g <- g + ggrepel::geom_text_repel(ggplot2::aes(label = name), size = 3,
+             show.legend = FALSE, max.overlaps = Inf, min.segment.length = 0)
+  } else {
+    g <- g + ggplot2::geom_text(ggplot2::aes(label = name), vjust = -1, size = 3, show.legend = FALSE)
+  }
   save_gg("11_pca", g)
 } else {
   save_base("11_pca", function() { plot(pca$PC1, pca$PC2, col = as.integer(factor(pca$condition)), pch = 19,
@@ -830,7 +902,8 @@ if (has("pheatmap")) {
   cols <- if (has("RColorBrewer")) colorRampPalette(rev(RColorBrewer::brewer.pal(9,"Blues")))(255) else NULL
   save_base("12_sample_distance_heatmap", function() pheatmap::pheatmap(distMat,
     clustering_distance_rows = sampleDists, clustering_distance_cols = sampleDists,
-    color = cols, main = "Sample-to-sample Euclidean distance (VST)"))
+    color = cols, display_numbers = TRUE, number_format = "%.0f", number_color = "grey15",
+    fontsize_number = 9, main = "Sample-to-sample Euclidean distance (VST)"))
 } else {
   save_base("12_sample_distance_heatmap", function() heatmap(distMat, main = "Sample distances"))
 }
@@ -838,7 +911,8 @@ if (has("pheatmap")) {
 corMat <- cor(assay(qc_obj), method = "spearman")
 save_table(as.data.frame(corMat), "12_sample_correlation.csv")
 if (has("pheatmap")) save_base("12_sample_correlation_heatmap", function()
-  pheatmap::pheatmap(corMat, main = "Sample Spearman correlation (VST)"))
+  pheatmap::pheatmap(corMat, display_numbers = TRUE, number_format = "%.2f",
+    number_color = "grey15", fontsize_number = 9, main = "Sample Spearman correlation (VST)"))
 
 # Cook's distance (outlier diagnostic) ---------------------------------------
 save_base("13_cooks_distance", function() {
@@ -869,18 +943,38 @@ res <- if (lfc_thr > 0) {
 
 # Shrunken LFC (for ranking / MA / volcano) ----------------------------------
 coef_name <- paste0("condition_", treat, "_vs_", control)
+if (!coef_name %in% resultsNames(dds)) {          # labels with '-', spaces, etc.
+  .cc <- grep("^condition_.*_vs_", resultsNames(dds), value = TRUE)
+  if (length(.cc) == 1) coef_name <- .cc
+}
 resShrink <- NULL
+shrink_used <- shrink
 if (shrink != "none") {
-  resShrink <- tryCatch({
-    if (shrink == "apeglm") {
+  attempt <- function(type) {
+    if (type == "apeglm") {
       if (!coef_name %in% resultsNames(dds)) stop("coef ", coef_name, " absent")
       lfcShrink(dds, coef = coef_name, type = "apeglm")
-    } else if (shrink == "ashr") {
+    } else if (type == "ashr") {
       lfcShrink(dds, contrast = c("condition", treat, control), type = "ashr")
     } else {
       lfcShrink(dds, contrast = c("condition", treat, control), type = "normal")
     }
-  }, error = function(e) { logmsg("WARNING: shrinkage (", shrink, ") failed: ", conditionMessage(e)); NULL })
+  }
+  resShrink <- tryCatch(attempt(shrink), error = function(e) {
+    # 'normal' is built into DESeq2 (no extra package), so it is the safe fallback.
+    if (shrink != "normal") {
+      logmsg("NOTE: shrinkage '", shrink, "' unavailable (", conditionMessage(e),
+             "); falling back to 'normal'. Install the '", shrink,
+             "' package for the preferred estimator.")
+      shrink_used <<- "normal"
+      tryCatch(attempt("normal"), error = function(e2) {
+        logmsg("WARNING: 'normal' shrinkage also failed: ", conditionMessage(e2))
+        shrink_used <<- "none"; NULL })
+    } else {
+      logmsg("WARNING: 'normal' shrinkage failed: ", conditionMessage(e))
+      shrink_used <<- "none"; NULL
+    }
+  })
 }
 
 # Assemble annotated results table -------------------------------------------
@@ -911,7 +1005,7 @@ summ <- data.frame(
   value  = c(sum(!is.na(res$pvalue)),
              sum(!is.na(res_df$padj) & res_df$padj < alpha & res_df$log2FoldChange > 0),
              sum(!is.na(res_df$padj) & res_df$padj < alpha & res_df$log2FoldChange < 0),
-             sum(is.na(res_df$padj)), alpha, lfc_thr, shrink))
+             sum(is.na(res_df$padj)), alpha, lfc_thr, shrink_used))
 save_table(summ, paste0("20_results_", contrast_name, "_summary.csv"))
 logmsg("DEGs @ padj<", alpha, ", |LFC|>=", lfc_thr, ": ", nrow(sig),
        " (up=", summ$value[2], ", down=", summ$value[3], ")")
@@ -941,28 +1035,43 @@ if (!is.null(metadata(res)$filterNumRej))
 # MA plots: raw MLE and shrunken
 save_base("32_MA_raw", function() plotMA(res, ylim = c(-4,4), main = paste0("MA (MLE): ", contrast_name)))
 if (!is.null(resShrink))
-  save_base("32_MA_shrunk", function() plotMA(resShrink, ylim = c(-4,4), main = paste0("MA (", shrink, "-shrunk): ", contrast_name)))
+  save_base("32_MA_shrunk", function() plotMA(resShrink, ylim = c(-4,4), main = paste0("MA (", shrink_used, "-shrunk): ", contrast_name)))
 
-# Volcano
+# Volcano — colour by direction: Up (red) / Down (blue) / NS (grey)
 volc <- res_df[!is.na(res_df$pvalue), ]
-volc$sig <- !is.na(volc$padj) & volc$padj < alpha & abs(volc$log2FoldChange) >= max(lfc_thr, 0)
+vthr <- max(lfc_thr, 0.585)                                  # visual >=1.5x guide lines
+.sig <- !is.na(volc$padj) & volc$padj < alpha & abs(volc$log2FoldChange) >= max(lfc_thr, 0)
+volc$regulation <- factor(ifelse(!.sig, "NS", ifelse(volc$log2FoldChange > 0, "Up", "Down")),
+                          levels = c("Up","Down","NS"))
+n_up <- sum(volc$regulation == "Up"); n_dn <- sum(volc$regulation == "Down")
 lab_col <- if ("gene_name" %in% colnames(volc)) "gene_name" else "gene_id"
+vcols   <- c(Up = "firebrick", Down = "royalblue3", NS = "grey75")
 if (has("ggplot2")) {
-  toplab <- head(volc[order(volc$padj), ], 20)
-  g <- ggplot2::ggplot(volc, ggplot2::aes(log2FoldChange, -log10(pvalue), color = sig)) +
-    ggplot2::geom_point(alpha = 0.5, size = 1) +
-    ggplot2::scale_color_manual(values = c(`FALSE` = "grey70", `TRUE` = "firebrick")) +
-    ggplot2::geom_vline(xintercept = c(-1,1)*max(lfc_thr,0.585), lty = 2, col = "grey40") +
-    ggplot2::theme_bw() + ggplot2::labs(title = paste0("Volcano: ", contrast_name),
-      subtitle = paste0("red: padj<", alpha), color = paste0("padj<", alpha))
+  ord    <- volc[order(volc$padj), ]
+  toplab <- rbind(head(ord[ord$regulation == "Up",   ], 10),
+                  head(ord[ord$regulation == "Down", ], 10))
+  g <- ggplot2::ggplot(volc, ggplot2::aes(log2FoldChange, -log10(pvalue), color = regulation)) +
+    ggplot2::geom_point(alpha = 0.6, size = 1) +
+    ggplot2::scale_color_manual(values = vcols, drop = FALSE,
+      name   = paste0("padj<", alpha, if (lfc_thr > 0) paste0(" & |LFC|>=", lfc_thr) else ""),
+      labels = c(paste0("Up (", n_up, ")"), paste0("Down (", n_dn, ")"), "Not sig.")) +
+    ggplot2::geom_vline(xintercept = c(-1, 1) * vthr, lty = 2, col = "grey40") +
+    ggplot2::geom_hline(yintercept = -log10(alpha), lty = 3, col = "grey60") +
+    ggplot2::theme_bw() +
+    ggplot2::labs(title = paste0("Volcano: ", contrast_name),
+                  subtitle = paste0("Up ", n_up, "  |  Down ", n_dn,
+                                    "   (padj<", alpha, ", |LFC|>=", max(lfc_thr, 0), ")"))
   if (has("ggrepel")) g <- g + ggrepel::geom_text_repel(data = toplab,
       ggplot2::aes(label = .data[[lab_col]]), size = 3, max.overlaps = 20, show.legend = FALSE)
   save_gg("33_volcano", g)
 } else {
   save_base("33_volcano", function() {
     with(volc, plot(log2FoldChange, -log10(pvalue), pch = 19, cex = 0.4,
-      col = ifelse(sig, "firebrick", "grey70"), main = paste0("Volcano: ", contrast_name)))
-    abline(v = c(-1,1)*max(lfc_thr,0.585), lty = 2)
+      col = vcols[as.character(regulation)], main = paste0("Volcano: ", contrast_name),
+      xlab = "log2FoldChange", ylab = "-log10(pvalue)"))
+    abline(v = c(-1, 1) * vthr, lty = 2); abline(h = -log10(alpha), lty = 3)
+    legend("topright", legend = c(paste0("Up (", n_up, ")"), paste0("Down (", n_dn, ")"), "Not sig."),
+           col = vcols, pch = 19, bty = "n")
   })
 }
 
@@ -971,9 +1080,10 @@ top_genes <- head(res_df$gene_id[!is.na(res_df$padj)], min(top_n, 12))
 if (length(top_genes) > 0 && has("ggplot2")) {
   dlist <- lapply(top_genes, function(g) {
     d <- plotCounts(dds, gene = g, intgroup = "condition", returnData = TRUE)
-    d$gene <- if (!is.null(ann)) { nm <- ann$gene_name[ann$gene_id == g]; if (length(nm)) nm[1] else g } else g
+    d$gene <- if (!is.null(ann)) { nm <- ann$gene_name[ann$gene_id == g]; if (length(nm)) as.character(nm)[1] else g } else g
     d })
   dd <- do.call(rbind, dlist)
+  dd$gene <- factor(as.character(dd$gene), levels = unique(as.character(dd$gene)))
   g <- ggplot2::ggplot(dd, ggplot2::aes(condition, count, color = condition)) +
     ggplot2::geom_point(position = ggplot2::position_jitter(width = 0.15)) +
     ggplot2::scale_y_log10() + ggplot2::facet_wrap(~ gene, scales = "free_y") +
@@ -1008,18 +1118,52 @@ manifest <- c(
   paste0("git_commit:  ", if (length(git_hash)) git_hash[1] else NA),
   paste0("R:           ", R.version.string),
   paste0("DESeq2:      ", as.character(packageVersion("DESeq2"))),
+  paste0("level:       ", level_lab),
   paste0("ref:         ", ref),
   paste0("gtf:         ", gtf_path),
   paste0("contrast:    ", treat, " vs ", control, "  (", contrast_name, ")"),
   paste0("design:      ", paste(deparse(design_formula), collapse = "")),
-  paste0("alpha:       ", alpha, "   lfcThreshold: ", lfc_thr, "   shrink: ", shrink),
+  paste0("alpha:       ", alpha, "   lfcThreshold: ", lfc_thr, "   shrink: ", shrink_used),
   paste0("n_samples:   ", ncol(dds), "   n_genes_tested: ", sum(!is.na(res$pvalue))),
   paste0("n_DEG:       ", nrow(sig)),
   paste0("args:        ", paste(raw, collapse = " ")),
   "outputs:", paste0("  tables:  ", tab_dir), paste0("  figures: ", fig_dir))
-writeLines(manifest, file.path(outdir, "MANIFEST.txt"))
-writeLines(capture.output(sessionInfo()), file.path(outdir, "sessionInfo.txt"))
-logmsg("DONE. DEGs=", nrow(sig), ". See ", outdir)
+writeLines(manifest, file.path(level_dir, "MANIFEST.txt"))
+writeLines(capture.output(sessionInfo()), file.path(level_dir, "sessionInfo.txt"))
+logmsg("DONE (", level_lab, "). DEGs=", nrow(sig), ". See ", level_dir)
+}  # ---- end dge_and_figures ----
+
+## ===========================================================================
+## DISPATCH: transcript level always; gene level if --collapse-to-gene
+## ===========================================================================
+dge_and_figures(cts, ann, base_dir, "transcript")
+
+if (isTRUE(collapse_gene)) {
+  if (is.null(ann)) {
+    logmsg("WARNING: --collapse-to-gene needs annotation (gene symbols); skipping gene level.")
+  } else {
+    # Sum transcript-model counts per gene symbol. gene_name already falls back
+    # to the transcript id when no symbol exists, so every row maps to a key.
+    # NOTE: this consolidates isoform-split signal but cannot recover reads the
+    # counter already discarded as ambiguous -- true gene-level counting needs a
+    # gene-level GTF (gencode) or union/featureCounts upstream.
+    key <- ann$gene_name[match(rownames(cts), ann$gene_id)]
+    key[is.na(key) | !nzchar(key)] <- rownames(cts)[is.na(key) | !nzchar(key)]
+    cts_gene <- rowsum(cts, group = key); storage.mode(cts_gene) <- "integer"
+    ann_gene <- data.frame(gene_id = rownames(cts_gene), gene_name = rownames(cts_gene),
+                           biotype = NA_character_,
+                           chrom = ann$chrom[match(rownames(cts_gene), ann$gene_name)],
+                           stringsAsFactors = FALSE)
+    dir.create(file.path(outdir, "tables"), recursive = TRUE, showWarnings = FALSE)
+    write.csv(data.frame(level = c("transcript", "gene"),
+                         n_features = c(nrow(cts), nrow(cts_gene))),
+              file.path(outdir, "tables", "gene_collapse_report.csv"), row.names = FALSE)
+    logmsg("gene-level collapse: ", nrow(cts), " transcript models -> ", nrow(cts_gene), " genes")
+    dge_and_figures(cts_gene, ann_gene, file.path(outdir, "gene_level"), "gene")
+  }
+}
+
 close(log_con)
-cat("\n==> Finished. ", nrow(sig), " DEGs at padj<", alpha,
-    ". Tables in ", tab_dir, ", figures in ", fig_dir, "\n", sep = "")
+cat("\n==> Finished.",
+    if (isTRUE(collapse_gene)) paste0(" See ", outdir, "/{transcript_level,gene_level}/")
+    else paste0(" See ", outdir), "\n", sep = "")

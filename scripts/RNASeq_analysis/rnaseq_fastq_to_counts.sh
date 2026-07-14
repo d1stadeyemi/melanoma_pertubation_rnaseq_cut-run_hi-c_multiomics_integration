@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J rnaseq
+#SBATCH -J RNA-Seq_pipeline
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -25,7 +25,8 @@ set -euo pipefail
 #
 # Output layout (each fastq PAIR gets its own clean directory):
 #   <outdir>/<replicate>/
-#       <replicate>_genecounts.tsv     raw counts (DESeq2 input; NOT normalized)
+#       <replicate>_genecounts.tsv     raw counts (htseq-style; DESeq2 input)
+#       <replicate>_featurecounts.txt(.summary)  native featureCounts output
 #       <replicate>_sorted.bam (+.bai) coordinate-sorted alignments
 #       <replicate>.cpm.norm.bw        CPM-normalized track for IGV
 #       <replicate>_Log.final.out      STAR mapping summary (+ other STAR logs)
@@ -70,6 +71,11 @@ OPTIONAL:
   --fwd-keyword <STR>   Token marking the forward read in the file name; it is
                         stripped to name the output directory. Default: R1_001
                         (e.g. use "R1" if your files are Sample_rep1_R1.fastq.gz).
+  --stranded <no|yes|reverse>
+                        Library strandedness for featureCounts (-s 0|1|2).
+                        Default: no. VERIFY with RSeQC infer_experiment.py before
+                        trusting counts; unstranded ("no") is the safe choice when
+                        samples are mixed or unknown.
   --rm-trimmed-fastqs   Delete the trimmed_fastqs/ contents when finished.
   --rm-sam              Delete the sam/ contents when finished (saves disk space).
   -h, --help            Show this help and exit.
@@ -98,6 +104,7 @@ R1=""
 R2=""
 OUTDIR=""
 FWD_KEYWORD="R1_001"
+STRANDED="no"
 RM_TRIMMED=false
 RM_SAM=false
 
@@ -112,6 +119,7 @@ while [[ $# -gt 0 ]]; do
         --r2|--R2)                need_val "$@"; R2="$2";          shift 2 ;;
         --outdir|--output-dir)    need_val "$@"; OUTDIR="$2";      shift 2 ;;
         --fwd-keyword|--fwd)      need_val "$@"; FWD_KEYWORD="$2"; shift 2 ;;
+        --stranded)               need_val "$@"; STRANDED="$2";    shift 2 ;;
         --rm-trimmed-fastqs|--rm_trimmed_fastqs) RM_TRIMMED=true; shift ;;
         --rm-sam|--rm_sam)                       RM_SAM=true;     shift ;;
         -h|--help)                usage; exit 0 ;;
@@ -181,6 +189,7 @@ ADAPTERS=/lustre/isaac24/proj/UTK0009/RNA-Seq/bbmap/resources/adapters.fa
 BBDUK=/lustre/isaac24/proj/UTK0009/RNA-Seq/conda_env/opt/bbmap-38.18/bbduk.sh
 # Conda env holding deepTools (bamCoverage).
 CONDA_ENV=/lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-run_hi-c_multiomics_integration/conda-envs/multiomics-py
+CONDA_ENV_SUBREAD=/lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-run_hi-c_multiomics_integration/conda-envs/subread
 
 # Threads = the CPUs SLURM allocated to this single task (fallback 20)
 THREADS=${SLURM_CPUS_PER_TASK:-20}
@@ -210,7 +219,7 @@ echo "Fastq dir : ${FASTQ_DIR}"
 echo "Output    : ${SampleDir}"
 echo "Genome    : ${GENOME_DIR}"
 echo "GTF       : ${GTF}"
-echo "Flags     : fwd_keyword=${FWD_KEYWORD}  rm_trimmed=${RM_TRIMMED}  rm_sam=${RM_SAM}"
+echo "Flags     : fwd_keyword=${FWD_KEYWORD}  stranded=${STRANDED}  rm_trimmed=${RM_TRIMMED}  rm_sam=${RM_SAM}"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
@@ -268,20 +277,57 @@ samtools sort -@ ${THREADS} -o "${SortedBam}" "${SamFile}"
 samtools index "${SortedBam}"
 
 # ---------------------------------------------------------------------------
-# 5. htseq gene counts (raw integers — DESeq2 normalizes internally)
+# 5. featureCounts gene counts (gene meta-features; raw integers)
+#    Output is converted to an htseq-style 2-column file (+ __ summary rows) so
+#    the downstream DESeq2 script reads it unchanged (Figure 02 QC preserved).
 # ---------------------------------------------------------------------------
-echo ">> [5/6] htseq counts"
-module load htseq/0.11.2-gcc
-htseq-count --format bam --order pos --mode intersection-strict --stranded no \
-    "${SortedBam}" "${GTF}" > "${Counts}"
+# map --stranded to featureCounts -s
+case "${STRANDED}" in
+    no|unstranded)  STRAND_S=0 ;;
+    yes|forward)    STRAND_S=1 ;;
+    reverse)        STRAND_S=2 ;;
+    *) echo "ERROR: --stranded must be no|yes|reverse (got '${STRANDED}')"; exit 1 ;;
+esac
+
+echo ">> [5/6] featureCounts (-s ${STRAND_S}, meta-feature gene_id)"
+module purge
+module load anaconda3/2024.06
+source $ANACONDA3_SH
+conda activate "${CONDA_ENV_SUBREAD}"
+unset PYTHONPATH
+
+FCraw=${Sample}_featurecounts.txt
+featureCounts -a "${GTF}" -o "${FCraw}" \
+    -p --countReadPairs \
+    -t exon -g gene_id \
+    -s ${STRAND_S} \
+    -T ${THREADS} \
+    "${SortedBam}"
+
+# --- make an htseq-compatible counts file: gene<TAB>count, then __ summary rows
+#     featureCounts columns: Geneid Chr Start End Strand Length <count>  -> keep 1,7
+tail -n +3 "${FCraw}" | cut -f1,7 > "${Counts}"
+awk -F'\t' '
+  $1=="Unassigned_NoFeatures"     {nf=$2}
+  $1=="Unassigned_Ambiguity"      {amb=$2}
+  $1=="Unassigned_MappingQuality" {mq=$2}
+  $1=="Unassigned_Unmapped"       {un=$2}
+  $1=="Unassigned_MultiMapping"   {mm=$2}
+  END{
+    printf "__no_feature\t%d\n",          nf+0
+    printf "__ambiguous\t%d\n",           amb+0
+    printf "__too_low_aQual\t%d\n",       mq+0
+    printf "__not_aligned\t%d\n",         un+0
+    printf "__alignment_not_unique\t%d\n", mm+0
+  }' "${FCraw}.summary" >> "${Counts}"
+
+conda deactivate
 
 # ---------------------------------------------------------------------------
 # 6. bigwig (CPM-normalized, for IGV)
 # ---------------------------------------------------------------------------
 echo ">> [6/6] bigwig generation"
 module purge
-module load anaconda3/2024.06
-source $ANACONDA3_SH
 conda activate "${CONDA_ENV}"
 unset PYTHONPATH
 bamCoverage --bam "${SortedBam}" --outFileName "${BigWig}" \
