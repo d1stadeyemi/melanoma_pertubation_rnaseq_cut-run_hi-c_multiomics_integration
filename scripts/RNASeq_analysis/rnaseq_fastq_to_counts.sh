@@ -21,7 +21,7 @@ set -euo pipefail
 # You choose the reference genome with the required --ref flag.
 #
 # Stages: adapter trim -> quality trim -> STAR align -> sort/index
-#         -> htseq count -> CPM bigwig
+#         -> featureCounts -> CPM bigwig
 #
 # Output layout (each fastq PAIR gets its own clean directory):
 #   <outdir>/<replicate>/
@@ -269,12 +269,62 @@ STAR --runThreadN ${THREADS} \
 mv "${StarPrefix}Aligned.out.sam" "${SamFile}"
 
 # ---------------------------------------------------------------------------
-# 4. Sort + index (needed for htseq pos-mode and for bigwig)
+# 4. Sort + index (needed for featureCounts pos-mode and for bigwig)
 # ---------------------------------------------------------------------------
 echo ">> [4/6] sort + index"
 module load samtools/1.16.1-gcc
 samtools sort -@ ${THREADS} -o "${SortedBam}" "${SamFile}"
 samtools index "${SortedBam}"
+
+# ---------------------------------------------------------------------------
+# 4b. Strandedness detection (reports; never silently changes --stranded)
+#     Counts a 2% BAM subsample 3x (-s 0/1/2). The highest "Assigned" wins.
+#     Needs nothing beyond featureCounts + samtools, so it works for hg19 and
+#     grch38 alike. Result -> <sample>_library_qc.tsv (read by the DESeq2 script).
+# ---------------------------------------------------------------------------
+echo ">> [4b/6] strandedness check"
+
+SubBam=${SamDir}/${Sample}_strandcheck.bam
+samtools view -@ ${THREADS} -s 42.02 -b "${SortedBam}" > "${SubBam}"
+
+# Active conda env for featureCounts (subread).
+module purge
+module load anaconda3/2024.06
+source $ANACONDA3_SH
+conda activate "${CONDA_ENV_SUBREAD}"
+unset PYTHONPATH
+
+declare -a SASSIGN
+for s in 0 1 2; do
+    featureCounts -a "${GTF}" -o "${SamDir}/sc_s${s}.txt" \
+        -p --countReadPairs -t exon -g gene_id -s ${s} -T ${THREADS} \
+        "${SubBam}" > /dev/null 2>&1
+    SASSIGN[$s]=$(awk -F'\t' '$1=="Assigned"{print $2}' "${SamDir}/sc_s${s}.txt.summary")
+done
+
+# verdict: >80% of stranded-informative fragments on one strand => that strand
+STRAND_VERDICT=$(awk -v a0="${SASSIGN[0]}" -v a1="${SASSIGN[1]}" -v a2="${SASSIGN[2]}" 'BEGIN{
+    tot = a1 + a2;
+    if (tot <= 0) { print "undetermined"; exit }
+    f1 = a1/tot; f2 = a2/tot;
+    if (f1 > 0.8)      print "forward";
+    else if (f2 > 0.8) print "reverse";
+    else               print "unstranded";
+}')
+
+printf "sample\tstrand_s0\tstrand_s1\tstrand_s2\tstrand_verdict\n"  > "${Sample}_library_qc.tsv"
+printf "%s\t%s\t%s\t%s\t%s\n" "${Sample}" "${SASSIGN[0]}" "${SASSIGN[1]}" "${SASSIGN[2]}" \
+    "${STRAND_VERDICT}" >> "${Sample}_library_qc.tsv"
+
+echo "   assigned: s0=${SASSIGN[0]}  s1=${SASSIGN[1]}  s2=${SASSIGN[2]}  -> ${STRAND_VERDICT}"
+if [[ "${STRAND_VERDICT}" != "${STRANDED}" && \
+      !( "${STRAND_VERDICT}" == "unstranded" && "${STRANDED}" == "no" ) && \
+      !( "${STRAND_VERDICT}" == "forward"    && "${STRANDED}" == "yes" ) ]]; then
+    echo "   WARNING: detected '${STRAND_VERDICT}' but --stranded is '${STRANDED}'."
+    echo "            Counting proceeds with your --stranded value (deliberate: mixed-prep"
+    echo "            projects must be counted the SAME way, not each 'correctly')."
+fi
+rm -f "${SubBam}" "${SamDir}"/sc_s*.txt "${SamDir}"/sc_s*.txt.summary
 
 # ---------------------------------------------------------------------------
 # 5. featureCounts gene counts (gene meta-features; raw integers)
@@ -290,11 +340,6 @@ case "${STRANDED}" in
 esac
 
 echo ">> [5/6] featureCounts (-s ${STRAND_S}, meta-feature gene_id)"
-module purge
-module load anaconda3/2024.06
-source $ANACONDA3_SH
-conda activate "${CONDA_ENV_SUBREAD}"
-unset PYTHONPATH
 
 FCraw=${Sample}_featurecounts.txt
 featureCounts -a "${GTF}" -o "${FCraw}" \

@@ -2,7 +2,7 @@
 ###############################################################################
 # rnaseq_deseq2_dge.R
 # -----------------------------------------------------------------------------
-# Differential gene expression (DGE) for ONE two-group contrast, from htseq-count
+# Differential gene expression (DGE) for ONE two-group contrast, from count
 # outputs produced by the upstream `rnaseq_fastq_to_counts.sh` pipeline, all the
 # way to annotated DEG tables + a full battery of QC / diagnostic figures.
 #
@@ -11,10 +11,12 @@
 # with a sample sheet (recommended, reproducible) or on the command line.
 #
 # WHAT IT PRODUCES (everything is written to disk; nothing is silent):
-#   tables/   assignment-rate QC, library sizes, detected genes, size factors,
+#   tables/   assignment-rate QC, LIBRARY QC (strandedness read-back + poly-A vs
+#             total-RNA call + biotype composition per sample), DEG-by-biotype,
+#             library sizes, detected genes, size factors,
 #             filtering summary, PCA coordinates, sample distances, full &
 #             significant results, threshold-sensitivity grid, annotation report
-#   figures/  htseq assignment bars, count distributions (raw/norm), RLE,
+#   figures/  assignment bars, count distributions (raw/norm), RLE,
 #             size-factor diagnostics, dispersion plot, mean-SD (VST/rlog),
 #             PCA + scree, sample-distance & correlation heatmaps, Cook's
 #             distance, p-value histogram, independent-filtering curve, MA
@@ -294,7 +296,7 @@ if (!alt_hyp %in% c("greaterAbs","lessAbs","greater","less")) { message("ERROR: 
 ## ---------------------------------------------------------------------------
 ## 1b. BUILD THE SAMPLE TABLE (coldata) from sheet OR inline groups
 ## ---------------------------------------------------------------------------
-# Discover every htseq count file under --counts-dir. Handles the standard
+# Discover every count file under --counts-dir. Handles the standard
 # rnaseq_fastq_to_counts.sh layout  <dir>/<rep>/<rep><suffix>  and a flat
 # <dir>/<rep><suffix>. The replicate NAME is the basename minus the suffix.
 discover_counts <- function(counts_dir, suffix) {
@@ -515,11 +517,11 @@ BPPARAM <- if (threads > 1 && has("BiocParallel")) BiocParallel::MulticoreParam(
 if (!is.null(BPPARAM)) logmsg("BiocParallel: ", threads, " workers")
 
 ## ===========================================================================
-## 3. READ htseq COUNTS  (+ assignment-rate QC from the __ summary rows)
+## 3. READ COUNTS  (+ assignment-rate QC from the __ summary rows)
 ## ===========================================================================
-# htseq-count appends 5 summary rows starting with "__". They are NOT genes and
+# count appends 5 summary rows starting with "__". They are NOT genes and
 # must be removed before modelling, but they are excellent library QC.
-read_htseq <- function(path) {
+read_counts <- function(path) {
   df <- read.table(path, sep = "\t", stringsAsFactors = FALSE,
                    col.names = c("gene_id", "count"), quote = "", comment.char = "")
   is_special <- startsWith(df$gene_id, "__")
@@ -527,8 +529,8 @@ read_htseq <- function(path) {
        special = setNames(df$count[is_special], df$gene_id[is_special]))
 }
 
-logmsg("reading ", nrow(coldata), " htseq count files ...")
-reads <- lapply(coldata$count_file, read_htseq)
+logmsg("reading ", nrow(coldata), " count files ...")
+reads <- lapply(coldata$count_file, read_counts)
 
 # --- assignment QC table ----------------------------------------------------
 special_names <- c("__no_feature","__ambiguous","__too_low_aQual","__not_aligned","__alignment_not_unique")
@@ -538,7 +540,7 @@ for (sn in special_names)
   qc[[sub("^__","",sn)]] <- vapply(reads, function(r) { v <- r$special[[sn]]; if (is.null(v)) 0 else v }, numeric(1))
 qc$total <- rowSums(qc[, c("assigned", sub("^__","",special_names))])
 qc$assignment_rate <- round(qc$assigned / qc$total, 4)
-save_table(qc, "02_htseq_assignment_qc.csv")
+save_table(qc, "02_count_assignment_qc.csv")
 
 # --- build the integer count matrix (aligned on common gene_ids) ------------
 gene_lists <- lapply(reads, function(r) r$genes$gene_id)
@@ -557,7 +559,7 @@ storage.mode(cts) <- "integer"
 logmsg("count matrix: ", nrow(cts), " genes x ", ncol(cts), " samples")
 
 # --- library-level QC figures ----------------------------------------------
-save_base("02_htseq_assignment_bars", function() {
+save_base("02_count_assignment_bars", function() {
   mat <- t(as.matrix(qc[, c("assigned", sub("^__","",special_names))]))
   colnames(mat) <- qc$sample
   # meaningful palette: assigned = green; the concerning multimappers red; rest muted
@@ -566,7 +568,7 @@ save_base("02_htseq_assignment_bars", function() {
                 alignment_not_unique = "#C1483B")[rownames(mat)]
   par(mar = c(9,5,3,9), xpd = TRUE)
   barplot(mat, col = asg_cols, border = NA, las = 2, ylab = "reads",
-          main = "htseq read assignment per sample")
+          main = "read assignment per sample")
   legend("topright", inset = c(-0.30,0), legend = rownames(mat),
          fill = asg_cols, border = NA, bty = "n", cex = 0.75)
 }, width = 9, height = 6)
@@ -770,6 +772,118 @@ if (!is.null(biotype_filt)) {
   if (sum(keep_bt) == 0) { message("ERROR: --biotype-filter '", biotype_filt, "' matched 0 genes."); quit(status = 2) }
   logmsg("biotype filter '", biotype_filt, "': keeping ", sum(keep_bt), "/", nrow(cts), " genes")
   cts <- cts[keep_bt, , drop = FALSE]
+}
+
+## ===========================================================================
+## 4b. LIBRARY QC  —  strandedness (upstream) + library type (polyA vs total RNA)
+##     + biotype composition per sample (needs biotypes => grch38/gencode)
+## These are SAMPLE-level diagnostics, so they run once on the shared matrix.
+## ===========================================================================
+
+# --- (i) strandedness: read the *_library_qc.tsv siblings written by ---------
+#     rnaseq_fastq_to_counts.sh. Absent (older runs) => silently skipped.
+strand_verdict <- "not available (no *_library_qc.tsv next to the count files)"
+lib_qc_files <- vapply(coldata$count_file, function(p) {
+  s <- sub(paste0(counts_suffix, "$"), "", basename(p))
+  f <- file.path(dirname(p), paste0(s, "_library_qc.tsv"))
+  if (file.exists(f)) f else NA_character_
+}, character(1))
+if (any(!is.na(lib_qc_files))) {
+  rows <- lapply(lib_qc_files[!is.na(lib_qc_files)], function(f)
+    tryCatch(read.table(f, header = TRUE, sep = "\t", stringsAsFactors = FALSE),
+             error = function(e) NULL))
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) > 0) {
+    sq <- tryCatch(do.call(rbind, rows), error = function(e) NULL)
+    if (!is.null(sq) && "strand_verdict" %in% colnames(sq)) {
+      save_table(sq, "02b_strandedness_qc.csv")
+      v <- unique(sq$strand_verdict)
+      if (length(v) == 1) {
+        strand_verdict <- v
+        logmsg("strandedness (all samples): ", v)
+      } else {
+        strand_verdict <- paste0("MIXED across samples: ", paste(v, collapse = ", "))
+        logmsg("WARNING: samples disagree on strandedness (", paste(v, collapse = ", "),
+               "). Different library preps => a potential batch effect confounded ",
+               "with condition. Counting unstranded (--stranded no) is the safe common ",
+               "denominator; do NOT count each sample 'correctly'.")
+      }
+    }
+  }
+}
+
+# --- (ii) library type: fraction of counts in NON-POLYADENYLATED species -----
+# Poly-A selection removes replication-dependent histones, Pol III transcripts and
+# sno/scaRNAs; total-RNA/ribo-depleted libraries keep them. Works on ANY ref that
+# has gene symbols (hg19 via TxDb, grch38 via gencode). Heuristic => reported as
+# suggestive; the sequencing facility's kit name is the ground truth.
+nonpolya_pattern <- paste(c(
+  "^H1-[0-9]+$", "^H2AC[0-9]+", "^H2BC[0-9]+", "^H3C[0-9]+", "^H4C[0-9]+", "^HIST[0-9]",
+  "^RMRP$", "^RPPH1$", "^RN7SL[0-9]", "^RN7SK$", "^RNU[0-9]", "^SNORD", "^SNORA",
+  "^SCARNA", "^VTRNA", "^RNY[0-9]", "^RNA5S", "^RNA5-8S"), collapse = "|")
+libtype_verdict <- "not assessed (no gene symbols available)"
+if (!is.null(ann) && "gene_name" %in% names(ann)) {
+  sym <- ann$gene_name[match(rownames(cts), ann$gene_id)]
+  sym[is.na(sym)] <- rownames(cts)[is.na(sym)]
+  is_np <- grepl(nonpolya_pattern, sym)
+  if (sum(is_np) > 0) {
+    pct_np <- 100 * colSums(cts[is_np, , drop = FALSE]) / pmax(colSums(cts), 1)
+    call1  <- ifelse(pct_np < 2, "poly-A selected (likely)",
+              ifelse(pct_np > 5, "total RNA / ribo-depleted (likely)", "ambiguous"))
+    lt <- data.frame(sample = colnames(cts), condition = as.character(coldata$condition),
+                     n_marker_genes = sum(is_np),
+                     pct_counts_nonpolyA = round(as.numeric(pct_np), 3),
+                     call = call1, stringsAsFactors = FALSE)
+    save_table(lt, "02c_library_type_qc.csv")
+    for (i in seq_len(nrow(lt)))
+      logmsg("library type: ", lt$sample[i], "  non-polyA counts = ",
+             sprintf("%.2f%%", lt$pct_counts_nonpolyA[i]), "  -> ", lt$call[i])
+    uc <- unique(lt$call)
+    libtype_verdict <- if (length(uc) == 1) uc else paste0("MIXED: ", paste(uc, collapse = " | "))
+    # loudest possible warning: library type differing BY CONDITION is a confound
+    bycond <- tapply(lt$call, lt$condition, function(x) paste(unique(x), collapse = "/"))
+    if (length(unique(bycond)) > 1) {
+      libtype_verdict <- paste0("CONFOUNDED with condition -> ",
+        paste(sprintf("%s: %s", names(bycond), bycond), collapse = " | "))
+      logmsg("WARNING: library TYPE differs BY CONDITION (",
+             paste(sprintf("%s=%s", names(bycond), bycond), collapse = ", "),
+             "). Poly-A vs total-RNA prep is confounded with the biology: non-polyA ",
+             "genes (histones, RMRP/RPPH1, sno/scaRNA, RN7SL) will appear differential ",
+             "for purely technical reasons. Restrict interpretation to poly-A mRNAs ",
+             "(e.g. --biotype-filter protein_coding) and confirm kit names with the facility.")
+    }
+  }
+}
+
+# --- (iii) biotype composition per sample (% of assigned counts) -------------
+# Measures the poly-A vs total-RNA difference directly rather than arguing it:
+# total-RNA libraries carry snRNA/snoRNA/misc_RNA/rRNA where poly-A libraries ~0.
+if (!is.null(ann) && "biotype" %in% names(ann) && any(!is.na(ann$biotype))) {
+  bt <- ann$biotype[match(rownames(cts), ann$gene_id)]
+  bt[is.na(bt) | !nzchar(bt)] <- "unknown"
+  comp <- rowsum(cts, group = bt)
+  pct  <- sweep(comp, 2, pmax(colSums(comp), 1), "/") * 100
+  save_table(data.frame(biotype = rownames(pct), round(as.data.frame(pct), 4),
+                        check.names = FALSE, stringsAsFactors = FALSE),
+             "05_biotype_composition_per_sample.csv")
+  # Heatmap: keep the top biotypes by max fraction, collapse the rest to "other".
+  if (has("pheatmap") && nrow(pct) > 1) {
+    ordbt <- order(apply(pct, 1, max), decreasing = TRUE)
+    keepn <- min(15L, nrow(pct))
+    top   <- pct[ordbt[seq_len(keepn)], , drop = FALSE]
+    if (nrow(pct) > keepn) {
+      other <- colSums(pct[ordbt[-seq_len(keepn)], , drop = FALSE])
+      top   <- rbind(top, other = other)
+    }
+    nums <- matrix(sprintf("%.2f", top), nrow = nrow(top),
+                   dimnames = dimnames(top))
+    anncol <- data.frame(condition = coldata$condition); rownames(anncol) <- colnames(cts)
+    save_base("05_biotype_composition_heatmap", function()
+      pheatmap::pheatmap(sqrt(top), display_numbers = nums, number_color = "grey15",
+        fontsize_number = 8, cluster_rows = FALSE, annotation_col = anncol,
+        main = "% of assigned counts per biotype (numbers = %, colour = sqrt scale)"),
+      width = 8, height = 7)
+  }
 }
 
 ## ===========================================================================
@@ -1016,6 +1130,53 @@ grid$n_DEG <- apply(grid, 1, function(r)
   sum(!is.na(res_df$padj) & res_df$padj < r[["alpha"]] & abs(res_df$log2FoldChange) >= r[["lfc"]]))
 save_table(grid, paste0("22_threshold_sensitivity_", contrast_name, ".csv"))
 
+# --- DEG counts split by biotype -------------------------------------------
+# Shows WHICH classes of gene drive the DEG list. If most "up" genes are
+# non-polyA classes (snRNA/snoRNA/misc_RNA/rRNA*/scaRNA), the signal is a
+# library-prep artifact rather than biology. Needs biotypes => grch38/gencode.
+if ("biotype" %in% colnames(res_df) && any(!is.na(res_df$biotype))) {
+  tst <- res_df[!is.na(res_df$padj), , drop = FALSE]
+  if (nrow(tst) > 0) {
+    tst$biotype[is.na(tst$biotype) | !nzchar(tst$biotype)] <- "unknown"
+    is_up <- tst$padj < alpha & tst$log2FoldChange >= max(lfc_thr, 0)
+    is_dn <- tst$padj < alpha & tst$log2FoldChange <= -max(lfc_thr, 0)
+    bts <- sort(unique(tst$biotype))
+    cnt <- function(v) as.integer(vapply(bts, function(b) sum(v & tst$biotype == b), numeric(1)))
+    n_tested <- as.integer(vapply(bts, function(b) sum(tst$biotype == b), numeric(1)))
+    n_up <- cnt(is_up); n_dn <- cnt(is_dn)
+    deg_bt <- data.frame(
+      biotype = bts, n_tested = n_tested, n_up = n_up, n_down = n_dn,
+      pct_of_tested_DE = round(100 * (n_up + n_dn) / pmax(n_tested, 1), 2),
+      pct_of_all_up    = round(100 * n_up / max(sum(is_up), 1), 2),
+      pct_of_all_down  = round(100 * n_dn / max(sum(is_dn), 1), 2),
+      stringsAsFactors = FALSE)
+    deg_bt <- deg_bt[order(-(deg_bt$n_up + deg_bt$n_down)), , drop = FALSE]
+    save_table(deg_bt, paste0("23_DEG_by_biotype_", contrast_name, ".csv"))
+    npc <- c("snRNA","snoRNA","scaRNA","misc_RNA","rRNA","rRNA_pseudogene","Mt_rRNA","vault_RNA","sRNA","ribozyme")
+    fr  <- 100 * sum(deg_bt$n_up[deg_bt$biotype %in% npc]) / max(sum(is_up), 1)
+    logmsg("DEG-by-biotype: ", sprintf("%.1f%%", fr), " of UP genes are non-polyA ncRNA classes")
+    if (fr > 20)
+      logmsg("WARNING: >20% of UP genes are non-polyA ncRNA classes — consistent with a ",
+             "poly-A vs total-RNA library difference, not biology. See 02c_library_type_qc.csv.")
+    if (has("pheatmap") && nrow(deg_bt) > 1) {
+      keepn <- min(15L, nrow(deg_bt))
+      hm <- as.matrix(deg_bt[seq_len(keepn), c("n_tested","n_up","n_down","pct_of_all_up")])
+      rownames(hm) <- deg_bt$biotype[seq_len(keepn)]
+      nums <- matrix(c(sprintf("%d", hm[, "n_tested"]), sprintf("%d", hm[, "n_up"]),
+                       sprintf("%d", hm[, "n_down"]), sprintf("%.1f", hm[, "pct_of_all_up"])),
+                     nrow = nrow(hm), dimnames = dimnames(hm))
+      # colour each column on its own scale (counts vs % are not comparable)
+      hs <- apply(hm, 2, function(x) if (diff(range(x)) == 0) x*0 else (x - min(x))/diff(range(x)))
+      save_base(paste0("23_DEG_by_biotype_", contrast_name), function()
+        pheatmap::pheatmap(hs, display_numbers = nums, number_color = "grey15",
+          fontsize_number = 8, cluster_rows = FALSE, cluster_cols = FALSE,
+          main = paste0("DEGs by biotype: ", contrast_name,
+                        "\n(numbers = counts / %; colour = per-column scale)")),
+        width = 7, height = 7)
+    }
+  }
+}
+
 ## ===========================================================================
 ## 8. RESULTS FIGURES
 ## ===========================================================================
@@ -1126,6 +1287,8 @@ manifest <- c(
   paste0("alpha:       ", alpha, "   lfcThreshold: ", lfc_thr, "   shrink: ", shrink_used),
   paste0("n_samples:   ", ncol(dds), "   n_genes_tested: ", sum(!is.na(res$pvalue))),
   paste0("n_DEG:       ", nrow(sig)),
+  paste0("strandedness:  ", strand_verdict),
+  paste0("library_type:  ", libtype_verdict),
   paste0("args:        ", paste(raw, collapse = " ")),
   "outputs:", paste0("  tables:  ", tab_dir), paste0("  figures: ", fig_dir))
 writeLines(manifest, file.path(level_dir, "MANIFEST.txt"))
@@ -1136,7 +1299,7 @@ logmsg("DONE (", level_lab, "). DEGs=", nrow(sig), ". See ", level_dir)
 ## ===========================================================================
 ## DISPATCH: transcript level always; gene level if --collapse-to-gene
 ## ===========================================================================
-dge_and_figures(cts, ann, base_dir, "transcript")
+dge_and_figures(cts, ann, base_dir, if (isTRUE(collapse_gene)) "transcript" else "primary")
 
 if (isTRUE(collapse_gene)) {
   if (is.null(ann)) {
