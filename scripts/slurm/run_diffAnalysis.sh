@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=10:00:00
-#SBATCH --output=logs/diffAnalysis_epz_%j.out
-#SBATCH --error=logs/diffAnalysis_epz_%j.err
+#SBATCH --output=logs/diffAnalysis_%j.out
+#SBATCH --error=logs/diffAnalysis_%j.err
 #SBATCH --mail-user=majagbe@vols.utk.edu
 #SBATCH --mail-type=ALL
 #SBATCH --chdir=/lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-run_hi-c_multiomics_integration
@@ -102,7 +102,8 @@ Rscript scripts/analysis/csaw.R \
     --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
     --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
     --genes data/processed/GeneListTSShg19_cleaned.txt \
-    --greenlist data/processed/greenlist/greenlist_hg19.bed
+    --greenlist data/processed/greenlist/greenlist_hg19.bed \
+    --bigwig
 
 # # Rscript scripts/analysis/csaw.R \
 #     --sheet data/processed/sample_sheet.csv \

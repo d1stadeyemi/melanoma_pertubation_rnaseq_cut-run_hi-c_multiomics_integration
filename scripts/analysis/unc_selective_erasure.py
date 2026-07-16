@@ -49,8 +49,9 @@ baseline-control mode --baseline-match {decile,fine,residual}.
 
 New outputs (in --outdir):
     compartment_matched_results.tsv          per-contrast Cliff's delta / CI / perm-p
-                                             (switchers, reverters, AND H3K27me3 gainers,
-                                              each vs same-compartment stable in its arm)
+                                             (switchers + reverters; H3K27me3 gainers are
+                                              added only with --cmatched-gainers), each vs
+                                              same-compartment stable in its arm
     forest_effect_sizes_cmatched.png         forest of the compartment-matched contrasts
     violin_cmatched_b10_stableA.png          B10 arm, A-compartment sets vs Stable A
     violin_cmatched_b10_stableB.png          B10 arm, B-compartment sets vs Stable B
@@ -90,8 +91,8 @@ python unc_selective_erasure.py ... --no-cmatched-combined
 # Skip the 2 per-arm (both-compartments-on-one-axis) panels:
 python unc_selective_erasure.py ... --no-cmatched-per-arm
 
-# Skip the gainer contrasts:
-python unc_selective_erasure.py ... --no-cmatched-gainers
+# Add the gainer contrasts (OPT-IN: off unless this flag is given):
+python unc_selective_erasure.py ... --cmatched-gainers
 
 # Skip the compartment-matched block entirely (old behaviour):
 python unc_selective_erasure.py ... --no-compartment-matched
@@ -1161,16 +1162,11 @@ def main(args):
           ("B10","UNC_reverters",rev,"dUNC_b10","baseline_b10"),
           ("B10","reverters_A_to_B",rev_atb,"dUNC_b10","baseline_b10"),
           ("B10","reverters_B_to_A",rev_bta,"dUNC_b10","baseline_b10"),
+          ("B10","H3K27me3_gainers",gain,"dUNC_b10","baseline_b10"),
           ("Parental","migration_switchers",sw,"dUNC_parental","baseline_parental"),
           ("Parental","switchers_A_to_B",atb,"dUNC_parental","baseline_parental"),
-          ("Parental","switchers_B_to_A",bta,"dUNC_parental","baseline_parental")]
-
-    # Only include gainers contrasts when explicitly requested via --plot-gainers
-    if args.plot_gainers:
-        plan += [
-            ("B10","H3K27me3_gainers",gain,"dUNC_b10","baseline_b10"),
-            ("Parental","H3K27me3_gainers",gain,"dUNC_parental","baseline_parental"),
-        ]
+          ("Parental","switchers_B_to_A",bta,"dUNC_parental","baseline_parental"),
+          ("Parental","H3K27me3_gainers",gain,"dUNC_parental","baseline_parental")]
 
     rows=[]
     for i,(cell,name,tmask,vcol,bcol) in enumerate(plan):
@@ -1231,6 +1227,7 @@ def main(args):
     # --- compartment-matched selectivity analysis ---
     if args.compartment_matched:
         print("[cmatch] compartment-matched reference analysis (each target vs same-compartment stable):")
+        print(f"[cmatch] gainer contrasts: {'ON (--cmatched-gainers given)' if args.cmatched_gainers else 'OFF (opt-in; pass --cmatched-gainers to enable)'}")
         _cmasks=dict(stabA=stabA, stabB=stabB, atb=atb, bta=bta, rev_atb=rev_atb, rev_bta=rev_bta)
         if args.cmatched_gainers and gainA_b10 is not None:
             _cmasks.update(gainA_b10=gainA_b10, gainB_b10=gainB_b10, gainA_par=gainA_par, gainB_par=gainB_par)
@@ -1399,11 +1396,12 @@ def build_parser():
                         "groups side by side: Stable A vs its A-sets, then Stable B vs its B-sets). Because a per-arm "
                         "panel never mixes normalization frames, heights ARE comparable within it. "
                         "--no-cmatched-per-arm to skip.")
-    p.add_argument("--cmatched-gainers", action=argparse.BooleanOptionalAction, default=True,
-                   help="within the compartment-matched block, also test H3K27me3 GAINERS (the most direct proxy for "
-                        "migration-installed mark) split by their own-arm compartment vs same-compartment stable. Adds "
-                        "4 contrasts (gainers_A/gainers_B x B10/Parental) and a gainer violin to each panel. Needs PC1 "
-                        "columns in the compartment file. --no-cmatched-gainers to skip.")
+    p.add_argument("--cmatched-gainers", action=argparse.BooleanOptionalAction, default=False,
+                   help="OPT-IN. Within the compartment-matched block, also test H3K27me3 GAINERS (the most direct "
+                        "proxy for migration-installed mark) split by their own-arm compartment vs same-compartment "
+                        "stable. Pass --cmatched-gainers to add 4 contrasts (gainers_A/gainers_B x B10/Parental) and a "
+                        "gainer violin to each panel. Needs PC1 columns in the compartment file. Off by default, so the "
+                        "compartment-matched block emits the 6 switcher/reverter contrasts only.")
     p.add_argument("--diagnose", action=argparse.BooleanOptionalAction, default=True,
                    help="run the anomaly diagnostics suite (D1-D5) into <outdir>/diagnostics/. --no-diagnose to skip.")
     p.add_argument("--n-strata", type=int, default=10); p.add_argument("--n-perm", type=int, default=1000)

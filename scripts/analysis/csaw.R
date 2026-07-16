@@ -4,7 +4,19 @@
 # =============================================================================
 # PROJECT: A375 melanoma parental-vs-B10 constricted-migration multi-omics.
 #
-# CHANGES FROM v7 (full notes inline at each site):
+# CHANGES FROM v8 (full notes inline at each site):
+#   1. PER-NORMALIZATION BIGWIG EXPORT (opt-in --bigwig, new export_bigwigs):
+#      one bigwig per (sample x activated normalization), written into that
+#      normalization's own output directory, scaled by THAT method's factor:
+#          scale_k = 1e6 / (lib.size_k * norm.factors_k)
+#      which is exactly edgeR's effective library, so the track matches the
+#      logCPM this script tests on. Bins are counted with csaw::windowCounts
+#      (bin=TRUE) under the SAME readParam as the analysis, so the coverage and
+#      the lib.size in the scale factor come from the same read set (no second,
+#      divergent filtering path as would happen with deepTools bamCoverage).
+#      Scale factors are written to <tag>_bigwig_scalefactors.csv.
+#
+# CHANGES FROM v7 (retained):
 #   1. FIGURE FIXES:
 #        - filter-diagnostics title split onto two lines (was clipped L/R).
 #        - MDS title shortened + subtitle; overlapping replicate labels staggered
@@ -45,6 +57,8 @@
 #   sf: nf = SF/geomean(SF) -> effective lib = N*SF; larger SF lowers normalized
 #       counts = global loss (Jin et al. 2020). spikein: effective lib ∝ spikein
 #       reads. Both directions are correct in this script.
+#   --bigwig turns this audit into something you can SEE: the tracks differ only
+#   by a per-sample constant, so load a DMSO/UNC pair on a shared y-axis in IGV.
 # =============================================================================
 #
 # -----------------------------------------------------------------------------
@@ -56,7 +70,7 @@
 # 1) The headline Parental UNC-vs-DMSO run (multi-size, group-aware, all norms,
 #    spike-in + ChIPseqSpikeInFree factors, peaks for the RTM-immune stratifier,
 #    independent B10|DMSO baseline, log2(3) enrichment filter), now with the new
-#    condition scatter + fragment QC:
+#    condition scatter + fragment QC + per-normalization bigwigs:
 #      Rscript csaw.R \
 #        --sheet samples.csv --mark H3K27me3 --test contrast \
 #        --group1 "Parental|UNC" --group2 "Parental|DMSO" \
@@ -64,42 +78,49 @@
 #        --spikein sheet --normfactors chipseqspikeinfree_SF.csv \
 #        --window 1000,2000,5000 --filter_mode group_aware --min_lfc_bg 1.585 \
 #        --peaks sheet --baseline_group "B10|DMSO" \
-#        --genes hg19_genes.tsv --fragment_qc \
+#        --genes hg19_genes.tsv --fragment_qc --bigwig \
 #        --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc_3FC
 #
 #    -> spikein/sf significant tables label the positive class "resistant" (not
 #       "gained"); <tag>_<norm>_condition_scatter.{pdf,png} shows lost (blue, below
 #       y=x) vs resistant (red) vs ns; diagnostics/<tag>_fragment_sizes.* and
-#       diagnostics/<tag>_read_qc.* expose what readParam(dedup,max.frag) filters.
+#       diagnostics/<tag>_read_qc.* expose what readParam(dedup,max.frag) filters;
+#       <outdir>/<norm>/<SampleID>_<norm>.bw are the browser tracks for that norm.
 #
-# 2) Add the optional within-group replicate-vs-replicate scatter (QC for the
+# 2) Bigwigs only, coarser bins (smaller files; H3K27me3 is broad so 500 bp is
+#    plenty and cuts memory ~5x vs the 100 bp default):
+#      ... --bigwig --bigwig_binsize 500
+#
+# 3) Add the optional within-group replicate-vs-replicate scatter (QC for the
 #    UNC replicate split seen in MDS):
 #      ... (as above) ... --replicate_scatter
 #
-# 3) Anchor the absolute global-loss magnitude to an orthogonal measurement: pass
+# 4) Anchor the absolute global-loss magnitude to an orthogonal measurement: pass
 #    the IF/western global log2FC (treated vs reference). The dashed line then
 #    appears on the condition scatter AND the normalization-comparison panels, so
 #    the method whose cloud sits on that line is the one telling the truth about
 #    magnitude:
 #      ... --reference_shift -1.0 --orthogonal_mark H3K9me3
 #
-# 4) Single-size robustness check (clean 2 kb only; compare direction + peak-
+# 5) Single-size robustness check (clean 2 kb only; compare direction + peak-
 #    stratified loss against the multi-size headline):
 #      Rscript csaw.R --sheet samples.csv --mark H3K27me3 \
 #        --group1 "Parental|UNC" --group2 "Parental|DMSO" \
 #        --norm background --window 2000 --filter_mode group_aware --min_lfc_bg 1.585 \
 #        --peaks sheet --outdir results/exploratory/.../parunc_2kb_only
 #
-# 5) Interaction test (state x treatment; e.g. does UNC act differently in B10):
+# 6) Interaction test (state x treatment; e.g. does UNC act differently in B10):
 #      Rscript csaw.R --sheet samples.csv --mark H3K27me3 --test interaction \
 #        --cond_ref Parental --cond_alt B10 --treat_ref DMSO --treat_alt UNC \
 #        --norm libsize,background --window 1000,2000,5000 --filter_mode group_aware \
 #        --outdir results/exploratory/.../interaction
-#    (condition scatter is contrast-only; it is skipped for interaction.)
+#    (condition scatter is contrast-only; it is skipped for interaction. --bigwig
+#     still works: bigwigs are per-sample, not per-contrast.)
 #
-# 6) Load the functions WITHOUT running anything (e.g. to unit-test on ISAAC):
+# 7) Load the functions WITHOUT running anything (e.g. to unit-test on ISAAC):
 #      R> source("csaw.R")   # main() does NOT fire when sourced
 #      R> dir_labels(list(test="contrast"), "spikein")$up   # "resistant"
+#      R> bigwig_scale_factor(2e7, 1.25)                    # 0.04
 # =============================================================================
 
 suppressWarnings(suppressMessages({
@@ -173,6 +194,10 @@ parse_cli <- function() {
                 help = "Also draw within-group replicate-vs-replicate scatter (coloured by region call). The condition scatter is always drawn for contrasts. [default: FALSE]"),
     make_option("--fragment_qc", action = "store_true", default = FALSE,
                 help = "Write fragment-size + read-fate + duplication QC figures (one extra non-dedup counting pass; exposes what readParam(dedup,max.frag) filters). [default: FALSE]"),
+    make_option("--bigwig", action = "store_true", default = FALSE,
+                help = "Export one bigwig per (sample x activated normalization) into <outdir>/<norm>/<SampleID>_<norm>.bw, scaled by THAT method's factor (1e6/(lib.size*norm.factor)) so the track matches the logCPM this script tests on. Adds ONE extra genome-wide binned counting pass (shared by all methods). Needs the 'rtracklayer' package. [default: FALSE]"),
+    make_option("--bigwig_binsize", type = "integer", default = 100L,
+                help = "Bin size (bp) for --bigwig tracks. Smaller = finer but much larger files and memory (50 bp on hg19 is ~62M bins x n_samples). 500 is ample for a broad mark. [default %default]"),
     make_option("--blacklist", type = "character", default = NULL,
                 help = "Optional ENCODE blacklist BED. [default: none]"),
     make_option("--igg", type = "character", default = NULL,
@@ -190,6 +215,7 @@ parse_cli <- function() {
   if (!opt$test %in% c("contrast", "interaction")) stop("--test must be 'contrast' or 'interaction'.")
   if (!opt$filter_mode %in% c("global", "group_aware")) stop("--filter_mode must be 'global' or 'group_aware'.")
   if (opt$n_strata < 2L) stop("--n_strata must be >= 2.")
+  if (opt$bigwig_binsize < 1L) stop("--bigwig_binsize must be >= 1.")
   opt
 }
 
@@ -212,6 +238,21 @@ combine_keep <- function(keep_global, grp_filter_list, thr) {
 mean_within_group_cv <- function(x, group_key) {
   cvs <- tapply(x, group_key, function(z) if (length(z) > 1 && mean(z) != 0) sd(z) / abs(mean(z)) else NA_real_)
   mean(cvs, na.rm = TRUE)
+}
+
+# BIGWIG SCALE FACTOR -- the whole feature in one line, kept pure so it is testable.
+# edgeR normalizes as count / (lib.size * norm.factors) * 1e6, i.e. the effective
+# library is Ntilde_k = lib.size_k * nf_k. A browser track that matches the logCPM
+# this script tests on is therefore coverage_k * 1e6 / Ntilde_k. Every activated
+# normalization feeds the SAME formula and differs ONLY through nf_k, which is
+# precisely that method's claim about global magnitude.
+bigwig_scale_factor <- function(lib_size, nf) {
+  lib_size <- as.numeric(lib_size); nf <- as.numeric(nf)
+  if (length(lib_size) != length(nf)) stop("[BIGWIG] lib_size / nf length mismatch.")
+  eff <- lib_size * nf
+  if (any(!is.finite(eff)) || any(eff <= 0))
+    stop("[BIGWIG] non-finite/non-positive effective library size; cannot scale.")
+  1e6 / eff
 }
 
 parse_group <- function(spec) {
@@ -780,25 +821,7 @@ strata_balance_fig <- function(df, tag, norm, outdir, opt) {
 }
 
 # =============================================================================
-# NEW — correlation scatter plots, significant regions coloured
-# =============================================================================
-# Two related views, both at the REGION level (so colouring lines up exactly with
-# the differential calls), using this method's NORMALIZED per-sample logCPM:
-#
-#   CONDITION scatter (always, contrast only): x = mean reference (group2, e.g.
-#   DMSO) logCPM, y = mean treated (group1, e.g. UNC) logCPM, one point per region,
-#   coloured lost / resistant|gained / ns. The y=x diagonal is the "no change"
-#   line; lost regions sit BELOW it. If --reference_shift is given, the IF/western
-#   global line y = x + shift is drawn so you can see whether the cloud's centre of
-#   mass matches the orthogonal magnitude. This is the figure that shows, in
-#   abundance space, WHERE on the dynamic range the losses live and whether the
-#   positive ("resistant") calls are a low-abundance smear (offset artefact) or a
-#   real high-abundance population (true resistance).
-#
-#   REPLICATE scatter (optional, --replicate_scatter): within each group, rep-1 vs
-#   rep-2 logCPM coloured by region call. Pure reproducibility QC — a tight diagonal
-#   means concordant replicates; a fat cloud localises the disagreement (e.g. the
-#   UNC Dim-2 split seen in MDS) and shows whether it overlaps the significant set.
+# correlation scatter plots, significant regions coloured (v7)
 # =============================================================================
 correlation_scatter_fig <- function(df, region_sample_lcpm, meta, opt, tag, norm, outdir, do_replicate) {
   if (opt$test != "contrast") return(invisible(NULL))
@@ -873,7 +896,118 @@ correlation_scatter_fig <- function(df, region_sample_lcpm, meta, opt, tag, norm
 }
 
 # =============================================================================
-# NEW — per-step DIAGNOSTIC figures
+# NEW (v9) — PER-NORMALIZATION BIGWIG EXPORT
+# =============================================================================
+# One bigwig per (sample x activated normalization), written into that method's own
+# directory: <outdir>/<norm>/<SampleID>_<norm>.bw
+#
+# THE SCALE FACTOR. edgeR's normalized abundance for sample k is
+#     count / (lib.size_k * norm.factors_k) * 1e6
+# so the effective library is Ntilde_k = lib.size_k * nf_k, and the browser track
+# that matches the logCPM this script actually tests on is
+#     track_k(x) = coverage_k(x) * 1e6 / Ntilde_k        [see bigwig_scale_factor]
+# Every method feeds the SAME formula and differs ONLY through nf_k. That is the
+# point: for a given sample the tracks across methods are identical in SHAPE and
+# differ by a single per-sample constant -- and that constant IS the method's
+# entire claim about global magnitude.
+#
+# WHY COUNT WITH csaw AND NOT deepTools bamCoverage. The scale factor is anchored
+# to lib.size, which csaw defines as the reads surviving readParam(minq=20,
+# dedup=TRUE, pe="both", max.frag). bamCoverage applies its OWN read filtering, so
+# its coverage would be computed from a different read set than the lib.size that
+# scales it -- a silent mismatch. Counting the bigwig bins with
+# windowCounts(bin=TRUE, param=param) guarantees coverage and lib.size come from
+# exactly the same reads. It also avoids needing deepTools inside multiomics-r.
+# Cost: ONE extra genome-wide binned pass, shared by every method (the counts are
+# reused; only the scalar changes), hence --bigwig is opt-in.
+#
+# WHAT TO DO WITH THEM. This turns the header's normalization-direction audit into
+# something visible. Load a DMSO/UNC pair from the SAME <outdir>/<norm>/ in IGV
+# with a locked/shared y-axis:
+#   * libsize    -> UNC and DMSO are re-centred to the same total BY CONSTRUCTION,
+#                   so a genuine global H3K27me3 loss is invisible here. Expected.
+#   * background -> TMM on 10 kb bins; still relative.
+#   * spikein/sf -> magnitude-anchored: the UNC track should visibly DROP.
+# If UNC does NOT drop under spikein/sf, the factor direction is inverted -- EZH2i
+# cannot ADD H3K27me3 -- and the SF convention needs checking before those tracks
+# or their "resistant" calls are trusted.
+# =============================================================================
+export_bigwigs <- function(meta, param, opt, methods, nf_by_method, analysis_libs, tag) {
+  if (!requireNamespace("rtracklayer", quietly = TRUE)) {
+    say("[BIGWIG] package 'rtracklayer' is not installed -> bigwig export SKIPPED.")
+    say("[BIGWIG]   fix: conda activate multiomics-r; R -e 'BiocManager::install(\"rtracklayer\")'")
+    return(invisible(NULL))
+  }
+  bs <- as.integer(opt$bigwig_binsize)
+  say(sprintf("[BIGWIG] counting %d bp non-overlapping bins genome-wide with the ANALYSIS readParam ...", bs))
+  bwb <- windowCounts(meta$bamReads, bin = TRUE, width = bs, param = param, filter = 1)
+  gr   <- rowRanges(bwb)
+  cnt  <- assay(bwb)
+  libs <- as.numeric(bwb$totals)
+  if (ncol(cnt) != nrow(meta)) stop(sprintf("[BIGWIG] count columns (%d) != samples (%d).", ncol(cnt), nrow(meta)))
+
+  # lib.size here MUST equal the lib.size the analysis normalized on: 'totals' is
+  # genome-wide reads passing readParam and is independent of bin/window width, so
+  # any mismatch means the bins were counted under different filtering.
+  if (!is.null(analysis_libs)) {
+    if (!isTRUE(all.equal(libs, as.numeric(analysis_libs), tolerance = 1e-8))) {
+      say("[BIGWIG] WARNING: bigwig-pass library sizes differ from the analysis library sizes:")
+      for (i in seq_len(nrow(meta)))
+        say(sprintf("[BIGWIG]   %-28s analysis=%.0f  bigwig=%.0f", meta$SampleID[i], analysis_libs[i], libs[i]))
+      say("[BIGWIG] Tracks are still internally consistent, but report this — it should not happen.")
+    } else {
+      say("[BIGWIG] library sizes match the analysis exactly (same readParam, same read set).")
+    }
+  }
+
+  # bigwig needs seqlengths; fall back to the BAM header if csaw did not set them.
+  if (any(is.na(seqlengths(gr)))) {
+    hdr <- Rsamtools::scanBamHeader(meta$bamReads[1])[[1]]$targets
+    common <- intersect(names(hdr), seqlevels(gr))
+    if (length(common)) seqlengths(gr)[common] <- as.integer(hdr[common])
+  }
+  if (any(is.na(seqlengths(gr)))) {
+    say("[BIGWIG] WARNING: could not resolve seqlengths for all contigs; dropping those without a length.")
+    gr_keep <- !is.na(seqlengths(gr)[as.character(seqnames(gr))])
+    gr <- gr[gr_keep]; cnt <- cnt[gr_keep, , drop = FALSE]
+    gr <- keepSeqlevels(gr, names(which(!is.na(seqlengths(gr)))), pruning.mode = "coarse")
+  }
+  gr <- trim(gr)   # last bin of each chromosome can overhang the contig end
+
+  sf_tab <- data.frame(SampleID = meta$SampleID, lib.size = libs, stringsAsFactors = FALSE)
+  n_written <- 0L
+  for (m in methods) {
+    nf <- as.numeric(nf_by_method[[m]])
+    if (length(nf) != nrow(meta)) { say(sprintf("[BIGWIG] method '%s': nf length mismatch — skipped.", m)); next }
+    scales <- bigwig_scale_factor(libs, nf)
+    sf_tab[[paste0("nf_", m)]]    <- nf
+    sf_tab[[paste0("scale_", m)]] <- scales
+    mdir <- file.path(opt$outdir, m); dir.create(mdir, showWarnings = FALSE, recursive = TRUE)
+    for (i in seq_len(nrow(meta))) {
+      g <- gr
+      g$score <- as.numeric(cnt[, i]) * scales[i]
+      g <- g[g$score > 0]                       # empty bins are implicitly 0 in a bigwig
+      fn <- file.path(mdir, sprintf("%s_%s.bw", meta$SampleID[i], m))
+      ok <- tryCatch({ rtracklayer::export.bw(g, fn); TRUE },
+                     error = function(e) { say(sprintf("[BIGWIG] export failed for %s (%s): %s",
+                                                       meta$SampleID[i], m, conditionMessage(e))); FALSE })
+      if (ok) n_written <- n_written + 1L
+    }
+    say(sprintf("[BIGWIG] %-10s scale = 1e6/(lib.size*nf): %s",
+                m, paste(sprintf("%s=%.4g", meta$SampleID, scales), collapse = "  ")))
+  }
+  sf_path <- file.path(opt$outdir, sprintf("%s_bigwig_scalefactors.csv", tag))
+  write.csv(sf_tab, sf_path, row.names = FALSE)
+  say(sprintf("[BIGWIG] wrote %d bigwig(s) (%d samples x %d methods) at %d bp -> <outdir>/<norm>/<SampleID>_<norm>.bw",
+              n_written, nrow(meta), length(methods), bs))
+  say(sprintf("[BIGWIG] scale factors -> %s", basename(sf_path)))
+  say("[BIGWIG] NOTE: for one sample the tracks differ across methods ONLY by a constant; compare a")
+  say("[BIGWIG]   treated/reference PAIR within one <norm>/ on a locked y-axis to see that method's magnitude claim.")
+  invisible(sf_tab)
+}
+
+# =============================================================================
+# per-step DIAGNOSTIC figures (v6/v7)
 # =============================================================================
 
 # (1) FILTERING diagnostic, one figure per window size.
@@ -998,37 +1132,11 @@ bcv_plot <- function(y, tag, norm, outdir) {
 }
 
 # =============================================================================
-# NEW — FRAGMENT / DUPLICATION QC (exposes the hidden readParam behaviour)
-# =============================================================================
-# readParam(dedup=TRUE, max.frag=opt$frag_max, pe="both", minq=20) silently:
-#   (i)   discards PCR/optical duplicates,
-#   (ii)  discards read pairs whose inferred fragment exceeds max.frag,
-#   (iii) discards improper pairs (singletons, mate-unmapped, wrong orientation,
-#         inter-chromosomal).
-# None of that is visible in the downstream figures. This QC makes it visible:
-#
-#   FIGURE 1 (<tag>_fragment_sizes): per-library fragment-length histogram measured
-#   with a RELAXED ceiling (so the full distribution shows), with the real
-#   --frag_max cutoff drawn in red. Everything to the RIGHT of that line is what
-#   max.frag throws away. A sane CUT&RUN/ChIP library should have most mass left of
-#   the line; a big right tail means max.frag is discarding real signal (raise it)
-#   or the library has long-fragment artefacts.
-#
-#   FIGURE 2 (<tag>_read_qc): (A) read-fate composition per library — the fraction
-#   of mapped reads that were USED (valid pairs) vs lost to each improper-pair
-#   reason from getPESizes()$diagnostics; (B) duplication rate per library, computed
-#   as 1 - dedup_total / nondedup_total over the background bins (one extra non-dedup
-#   counting pass). Wildly different duplication or usable-fraction between treated
-#   and reference libraries is a composition bias no normalization fully removes.
-#
-# Opt-in via --fragment_qc because getPESizes is one pass PER library and the
-# duplication check adds one more whole-genome (non-dedup) counting pass.
+# FRAGMENT / DUPLICATION QC (v7)
 # =============================================================================
 fragment_qc <- function(meta, bins, param, opt, tag, outdir) {
   bams <- meta$bamReads; ids <- meta$SampleID; nlib <- length(bams)
   # ---- (1) fragment sizes + read-fate diagnostics, one getPESizes pass per BAM ----
-  # Relax the ceiling so the histogram shows the FULL distribution; the true
-  # --frag_max line is drawn on top to mark what is actually discarded.
   qc_param <- reform(param, max.frag = max(opt$frag_max * 5L, 2000L))
   sizes_list <- setNames(vector("list", nlib), ids)
   loss_names <- c("single", "mate.unmapped", "unoriented", "inter.chr")
@@ -1082,10 +1190,6 @@ fragment_qc <- function(meta, bins, param, opt, tag, outdir) {
   # ---- FIGURE 2: read-fate composition + duplication rate ----
   draw2 <- function() {
     par(mfrow = c(1, 2), mar = c(8.5, 4.5, 3.4, 1), oma = c(0, 0, 2.0, 0))
-    # (A) stacked fractions of total READS: used vs each loss reason.
-    # getPESizes()$sizes is one value per valid PAIR, so usable reads = 2 x pairs;
-    # the loss categories and total.reads are already read-denominated. Bars need
-    # not fill to 1 — the remainder is duplicates/other reads.
     comp <- rbind(used = 2 * diag_used, t(diag_loss))
     denom <- ifelse(is.na(diag_total) | diag_total <= 0, colSums(comp), diag_total)
     fr <- sweep(comp, 2, pmax(denom, 1), "/")
@@ -1094,9 +1198,6 @@ fragment_qc <- function(meta, bins, param, opt, tag, outdir) {
     barplot(fr, col = palc, names.arg = ids, las = 2, cex.names = 0.6, ylim = c(0, 1.32),
             ylab = "fraction of total reads", main = "read fate (getPESizes)")
     legend("topright", bty = "o", bg = "white", box.col = "grey80", cex = 0.62, fill = palc, legend = rownames(fr))
-    # (B) duplication rate. When BAMs are pre-deduplicated upstream every rate is ~0;
-    # floor the axis at 0.05 so it never collapses to a 1e-06 scientific-notation scale,
-    # and annotate the pre-dedup case rather than drawing a misleading empty panel.
     if (all(is.na(dup_rate))) {
       plot.new(); title(main = "duplication rate"); text(0.5, 0.5, "n/a", col = "grey60")
     } else {
@@ -1112,7 +1213,6 @@ fragment_qc <- function(meta, bins, param, opt, tag, outdir) {
   }
   save_fig(sprintf("%s_read_qc", tag), outdir, draw2, w = 11, h = 4.8)
 
-  # ---- machine-readable QC table ----
   qc_tab <- data.frame(SampleID = ids, total_reads = diag_total, used_pairs = diag_used,
                        as.data.frame(diag_loss, row.names = NULL), dup_rate = dup_rate,
                        stringsAsFactors = FALSE)
@@ -1297,12 +1397,6 @@ map_genes_to_regions <- function(df, genes_gr, tag, norm, outdir, opt) {
 
 # =============================================================================
 # Group-aware filter A/B reporter: what did rescuing on/off windows buy?
-#   Writes <tag>_<norm>_filter_AB.csv and logs a plain-language summary. Region
-#   provenance is also in the region tables via the new columns:
-#     n_rescued_windows, frac_rescued, region_origin (global | mixed | rescued_only).
-#   'rescued_only' regions literally do not exist under --filter_mode global, so a
-#   SIGNIFICANT rescued_only region is a pure additional discovery from group-aware
-#   filtering (the headline number for the B10-UNC loss).
 # =============================================================================
 report_filter_ab <- function(ab, tag, norm, outdir, opt) {
   if (is.null(ab)) return(invisible(NULL))
@@ -1368,7 +1462,8 @@ run_norm <- function(method, per_size, bins, green, spike_v, sf_v, peaks_gr, ind
   report_filter_ab(ftr$ab, tag, method, norm_dir, opt)
 
   sig <- if (opt$test == "contrast") condition_signal(yfit, cond_key) else NULL
-  list(df = df, counts = counts, nf = nf, eff_libsize = y0_sig$samples$lib.size * nf,
+  list(df = df, counts = counts, nf = nf, lib_size = y0_sig$samples$lib.size,
+       eff_libsize = y0_sig$samples$lib.size * nf,
        signal = sig, disp = ftr$disp, ab = ftr$ab)
 }
 
@@ -1396,7 +1491,7 @@ main <- function() {
   tag <- if (opt$test == "contrast")
     sprintf("%s_%s_vs_%s", opt$mark, safe_token(opt$group1), safe_token(opt$group2))
   else sprintf("%s_interaction", opt$mark)
-  say(sprintf("=== csaw v8 | mark=%s | test=%s | windows=%s | filter=%s | tag=%s ===",
+  say(sprintf("=== csaw v9 | mark=%s | test=%s | windows=%s | filter=%s | tag=%s ===",
               opt$mark, opt$test, paste(sizes, collapse = ","), opt$filter_mode, tag))
   say(sprintf("[SAMPLES] %d libraries: %s", nrow(meta), paste(meta$SampleID, collapse = ", ")))
 
@@ -1464,12 +1559,14 @@ main <- function() {
 
   df_by_method <- list(); counts_by_method <- list(); nf_by_method <- list()
   eff_by_method <- list(); sig_by_method <- list(); disp_by_method <- list(); ab_by_method <- list()
+  analysis_libs <- NULL
   for (m in methods) {
     r <- run_norm(m, per_size, bins, green, spike_v, sf_v, peaks_gr, indep_list,
                   ab, tag, opt$outdir, opt, meta, cond_key, genes_gr, sizes, sig_idx, opt$skip_diagnostics)
     df_by_method[[m]] <- r$df; counts_by_method[[m]] <- r$counts
     nf_by_method[[m]] <- r$nf; eff_by_method[[m]] <- r$eff_libsize
     sig_by_method[[m]] <- r$signal; disp_by_method[[m]] <- r$disp; ab_by_method[[m]] <- r$ab
+    analysis_libs <- r$lib_size    # size-independent; identical across methods
   }
 
   norm_compare_fig(df_by_method, tag, opt$outdir)
@@ -1490,6 +1587,11 @@ main <- function() {
     say("[DIAG] normalization-factor + dispersion diagnostics written.")
   }
 
+  # ---- per-normalization bigwig tracks (opt-in) ----
+  # Runs AFTER the method loop so the single binned counting pass is shared by every
+  # method: the coverage is identical, only the per-sample scalar changes.
+  if (opt$bigwig) export_bigwigs(meta, param, opt, methods, nf_by_method, analysis_libs, tag)
+
   # ---- normalization-comparison figure (contrast only) ----
   if (opt$test == "contrast") {
     g1key <- attr(meta, "g1key"); g2key <- attr(meta, "g2key")
@@ -1508,8 +1610,9 @@ main <- function() {
 
   # ---- summary report ----
   summ <- file.path(opt$outdir, sprintf("%s_summary.txt", tag))
-  hdr <- c(strrep("=", 72), sprintf("csaw v8 summary | %s", tag), strrep("=", 72), "",
+  hdr <- c(strrep("=", 72), sprintf("csaw v9 summary | %s", tag), strrep("=", 72), "",
            sprintf("Windows: %s bp | filter_mode: %s | signal size: %d bp", paste(sizes, collapse = ","), opt$filter_mode, sizes[sig_idx]),
+           sprintf("Bigwig: %s", if (opt$bigwig) sprintf("yes, %d bp bins -> <outdir>/<norm>/<SampleID>_<norm>.bw", opt$bigwig_binsize) else "no (--bigwig to enable)"),
            sprintf("Significant region counts per normalization (FDR<%.2g, |logFC|>%.2g):", opt$fdr, opt$lfc))
   rows <- vapply(methods, function(m) { cc <- counts_by_method[[m]]
     sprintf("  %-12s total=%-7d sig=%-6d up=%-6d down=%-6d", m, cc["total"], cc["sig"], cc["up"], cc["down"]) }, character(1))
