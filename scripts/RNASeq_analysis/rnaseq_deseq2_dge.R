@@ -152,7 +152,7 @@ CONTRAST / DESIGN
 
 TESTING PARAMETERS
   --alpha <FLOAT>             FDR threshold for calling DEGs. Default: 0.05
-  --lfc-threshold <FLOAT>     Test |LFC| > threshold (Wald against a threshold). Default: 0
+  --lfc-threshold <FLOAT>     Test |LFC| > threshold (Wald against a threshold). Default: 1
   --alt-hypothesis <greaterAbs|lessAbs|greater|less>  Used when lfc-threshold>0. Default: greaterAbs
   --shrink <apeglm|ashr|normal|none>   LFC shrinkage for ranking/plots. Default: apeglm
   --fit-type <parametric|local|mean>   Dispersion fit. Default: parametric
@@ -268,7 +268,7 @@ counts_suffix <- getc("counts-suffix", "_genecounts.tsv")
 samplesheet   <- getc("samplesheet")
 outdir        <- getc("outdir", "deseq2_out")
 alpha         <- getn("alpha", 0.05)
-lfc_thr       <- getn("lfc-threshold", 0)
+lfc_thr       <- getn("lfc-threshold", 1)
 alt_hyp       <- getc("alt-hypothesis", "greaterAbs")
 shrink        <- getc("shrink", "apeglm")
 fit_type      <- getc("fit-type", "parametric")
@@ -1209,8 +1209,8 @@ lab_col <- if ("gene_name" %in% colnames(volc)) "gene_name" else "gene_id"
 vcols   <- c(Up = "firebrick", Down = "royalblue3", NS = "grey75")
 if (has("ggplot2")) {
   ord    <- volc[order(volc$padj), ]
-  toplab <- rbind(head(ord[ord$regulation == "Up",   ], 10),
-                  head(ord[ord$regulation == "Down", ], 10))
+  toplab <- rbind(head(ord[ord$regulation == "Up",   ], 15),
+                  head(ord[ord$regulation == "Down", ], 15))
   g <- ggplot2::ggplot(volc, ggplot2::aes(log2FoldChange, -log10(pvalue), color = regulation)) +
     ggplot2::geom_point(alpha = 0.6, size = 1) +
     ggplot2::scale_color_manual(values = vcols, drop = FALSE,
