@@ -1,8 +1,123 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# csaw.R — Window-based differential binding for BROAD histone marks
+# csaw.R — Window-based differential binding for BROAD histone marks,
+#          with SIX interchangeable normalizations and a built-in audit of
+#          what each one is entitled to claim.
 # =============================================================================
 # PROJECT: A375 melanoma parental-vs-B10 constricted-migration multi-omics.
+#          Hi-C (A/B compartments) + CUT&RUN (H3K27me3 / H3K27ac / H3K4me1 /
+#          H3K9me3, +/- EZH2i) + RNA-seq. This script is the CUT&RUN
+#          differential-binding engine.
+#
+# ===========================================================================
+# WHAT THIS SCRIPT DOES, AND WHY EACH PIECE IS HERE
+# ===========================================================================
+# 1. COUNTS reads in sliding windows genome-wide, at ONE size or SEVERAL
+#    (--window 1000,2000,5000). A broad mark has no single correct window size,
+#    so each size is counted, filtered and TESTED independently, then merged
+#    with mergeWindowsList(equiweight) + combineTests() into shared regions
+#    carrying ONE region-level FDR. You never have to pretend you knew the
+#    scale of the domains in advance.
+#
+# 2. FILTERS windows by enrichment over genomic background (or over IgG, via
+#    --igg), keeping only windows above --min_lfc_bg. Optionally GROUP-AWARE
+#    (--filter_mode group_aware): keep a window if EITHER contrast group's own
+#    average clears the bar. A global filter silently deletes on/off loci --
+#    precisely the loci a drug switches off -- because their cross-group average
+#    looks like background. The A/B reporter then quantifies what that rescue
+#    actually bought you in discoveries.
+#
+# 3. NORMALIZES with any subset of SIX methods (--norm). Each method is a
+#    different ASSUMPTION about what stayed constant between your samples.
+#    Running several and comparing them IS the analysis -- see the table below.
+#
+# 4. TESTS with edgeR quasi-likelihood: --test contrast (two groups) or
+#    --test interaction (does the treatment act differently in B10 vs Parental?).
+#
+# 5. STRATIFIES the up/down balance by baseline abundance to expose regression
+#    to the mean (RTM), with RTM-immune checks via --peaks and/or an independent
+#    --baseline_group counted in the same windows.
+#
+# 6. AUDITS ITSELF. Filtering distributions per size; a normalization-factor
+#    comparison; a dispersion comparison across methods (a method that scatters
+#    replicates inflates BCV and flattens your volcano -- you can see it);
+#    fragment/duplication QC (--fragment_qc) exposing what readParam() silently
+#    discards; region-level correlation scatters; and per-normalization bigwigs
+#    (--bigwig) so each method's magnitude claim is visible in IGV.
+#
+# ===========================================================================
+# THE SIX NORMALIZATIONS -- what each assumes, and what it is allowed to claim
+# ===========================================================================
+#   METHOD      NEEDS           ASSUMES                      MAY CLAIM
+#   ----------  --------------  ---------------------------  ------------------
+#   libsize     nothing         total mapped reads are       RELATIVE only
+#                               comparable
+#   background  nothing         most of the genome did not   RELATIVE only
+#                               change (TMM on --bg_bin bins)
+#   greenlist   --greenlist     the greenlist regions are    RELATIVE
+#                               invariant under treatment
+#   spikein     --spikein       E. coli carryover tracks     MAGNITUDE*
+#                               input amount
+#   sf          --normfactors   ChIPseqSpikeInFree's beta    MAGNITUDE*
+#                               read-distribution model
+#   kmet        --kmet          K-MetStat barcoded           MAGNITUDE*
+#                               nucleosomes were added at a
+#                               fixed amount per reaction
+#
+#   * MAGNITUDE only if the anchor is CONSISTENT WITHIN REPLICATE GROUPS. Check
+#     that before believing any global claim. An anchor whose within-group CV
+#     exceeds ~25-30% is reporting technical noise, and normalizing on it will
+#     manufacture a global shift that is not there.
+#
+# WHY libsize AND background CANNOT SEE A GLOBAL LOSS.
+#   Both rescale every library to a common total. Under EZH2i, H3K27me3 is
+#   globally depleted -- but rescaling to a common total re-centres that away by
+#   construction, converting DEPLETION into apparent REDISTRIBUTION. That is a
+#   compositional artifact, not biology (Egan 2016; Orlando 2014). The textbook
+#   signature is an asymmetric MA plot. These two methods are diagnostic and
+#   excellent for RELATIVE / loci-level claims; they are not evidence about
+#   global magnitude, and this script's direction labels reflect that (see
+#   dir_labels(): they say "gained", never "resistant").
+#
+# WHY spikein / sf / kmet ARE DIFFERENT.
+#   Each supplies an external invariant, so the effective library is tied to
+#   something other than the sample's own read total, and a genuine global shift
+#   survives. Under a depleting drug a positive logFC then means the locus
+#   RETAINED the mark while the genome lost it -> "resistant".
+#
+# ABOUT kmet SPECIFICALLY (EpiCypher SNAP-CUTANA K-MetStat, cat. 19-1002).
+#   Barcoded semi-synthetic nucleosomes carrying defined lysine-methylation PTMs,
+#   added to the reaction BEFORE the primary antibody. They therefore pass
+#   through antibody binding, pAG-MNase release, library prep and sequencing
+#   alongside your chromatin -- which is what makes them a candidate magnitude
+#   anchor where E. coli carryover (added AFTER digestion) structurally is not.
+#   Counts come from kmet_spikein_count.sh; QC from kmet_spikein_normfactors.R.
+#
+#   THE CAVEAT, and it is not small. The K-MetStat nucleosome is captured by the
+#   SAME antibody as your chromatin. Deplete the cellular substrate and freed
+#   antibody binds more spike-in AND more background, inflating S_i in exactly
+#   the arm where you want it clean, which EXAGGERATES apparent global loss.
+#   Measured in this project (21 H3K27me3 libraries, 2026-07): median worst
+#   off-target recovery rose 10.3% (untreated) -> 13.2% (DMSO) -> 24.9% (UNC),
+#   with 6/10 UNC libraries failing EpiCypher's <20% specificity bar. Direction
+#   is trustworthy; absolute magnitude carries an asterisk. cf. siQ-ChIP
+#   (Dickson et al., JBC 2020), which reports increased off-target IP after EZH2
+#   inhibition and places limits on spike-in trustworthiness.
+#
+#   VERDICT FOR THIS DATASET: use kmet as QC and as a SENSITIVITY ANALYSIS --
+#   if your loci-level calls agree between background and kmet, they are robust
+#   to the normalization assumption, which strengthens them. Do not ship a
+#   "depleted N-fold" number off it without an orthogonal anchor (immunoblot).
+#   Pass that anchor via --reference_shift once you have it.
+#
+# CHANGES FROM v9:
+#   1. SIXTH NORMALIZATION 'kmet' (--norm kmet, --kmet). Accepts 'sheet' (a
+#      kmet_ontarget_reads column in --sheet) or a path to kmet_summary.tsv /
+#      normfactors.csv. Reads the on-target barcode COUNT, never a precomputed
+#      factor -- see resolve_kmet() for why that distinction matters. Gated by
+#      the same batch check as spikein/sf, labelled "resistant" like them, and
+#      exported by --bigwig like them. Any QC columns in the file are surfaced
+#      as warnings (never blocks).
 #
 # CHANGES FROM v8 (full notes inline at each site):
 #   1. PER-NORMALIZATION BIGWIG EXPORT (opt-in --bigwig, new export_bigwigs):
@@ -102,6 +217,33 @@
 #    magnitude:
 #      ... --reference_shift -1.0 --orthogonal_mark H3K9me3
 #
+# 4b) SENSITIVITY ANALYSIS across normalization assumptions, including K-MetStat.
+#     This is the recommended way to use --norm kmet on this dataset: run the
+#     relative methods and the anchored ones side by side and ask whether your
+#     LOCI-LEVEL calls survive the change of assumption. Agreement = robust.
+#     Disagreement = the claim depends on the anchor, and the anchor needs its own
+#     evidence (kmet_qc.pdf, and ultimately an immunoblot via --reference_shift).
+#       Rscript csaw.R \
+#         --sheet samples.csv --mark H3K27me3 --test contrast \
+#         --group1 "Parental|UNC" --group2 "Parental|DMSO" \
+#         --norm libsize,background,kmet \
+#         --kmet data/processed/kmet_spikein/kmet_summary.tsv \
+#         --window 1000,2000,5000 --filter_mode group_aware --min_lfc_bg 1.585 \
+#         --peaks sheet --bigwig \
+#         --outdir results/exploratory/diff_analysis/csaw/Parunc_kmet_sensitivity
+#
+#     -> <tag>_norm_compare.{pdf,png} is the money figure: per-region logFC under
+#        kmet vs libsize with a Spearman rho. rho near 1 means the ranking (and so
+#        your gene lists) does not depend on the normalization; the two clouds will
+#        still be OFFSET, and that offset is exactly kmet's global-magnitude claim.
+#        kmet's significant table labels the positive class "resistant"; libsize's
+#        says "gained" -- that wording difference is deliberate and is the whole
+#        epistemics of this script in two words.
+#
+#     If the sample sheet already carries kmet_ontarget_reads (from
+#     generate_manifest.R --kmet_dir, via build_sample_sheet.R), use the shorthand:
+#         --norm libsize,background,kmet --kmet sheet
+#
 # 5) Single-size robustness check (clean 2 kb only; compare direction + peak-
 #    stratified loss against the multi-size headline):
 #      Rscript csaw.R --sheet samples.csv --mark H3K27me3 \
@@ -157,13 +299,33 @@ parse_cli <- function() {
     make_option("--outdir", type = "character", default = "csaw_out",
                 help = "Output directory. [default %default]"),
     make_option("--norm", type = "character", default = "background",
-                help = "Comma-separated normalizations. ALLOWED: libsize | background | greenlist | spikein | sf. 2+ -> 'libsize' auto-added. [default %default]"),
+                help = paste("Comma-separated normalizations; each is a different assumption about what",
+                             "stayed constant. ALLOWED:",
+                             "'libsize' (equal totals; RELATIVE only) |",
+                             "'background' (TMM on --bg_bin bins; RELATIVE only) |",
+                             "'greenlist' (needs --greenlist; RELATIVE) |",
+                             "'spikein' (needs --spikein; E. coli carryover; MAGNITUDE) |",
+                             "'sf' (needs --normfactors; ChIPseqSpikeInFree; MAGNITUDE) |",
+                             "'kmet' (needs --kmet; K-MetStat nucleosomes; MAGNITUDE).",
+                             "Give 2+ to compare them -- 'libsize' is auto-added as the",
+                             "assumption-free reference. MAGNITUDE methods are only believable if the",
+                             "anchor is consistent within replicate groups. [default %default]")),
     make_option("--greenlist", type = "character", default = NULL,
                 help = "Greenlist normalization regions: 3-col BED in hg19. [default: none]"),
     make_option("--spikein", type = "character", default = NULL,
                 help = "Spike-in (Orlando/RRPM): 'sheet' OR CSV(SampleID,spikein_reads). [default: none]"),
     make_option("--normfactors", type = "character", default = NULL,
                 help = "Precomputed per-sample SF (ChIPseqSpikeInFree). Table with ID col + factor col (SF/factor/ScalingFactor/norm.factors). [default: none]"),
+    make_option("--kmet", type = "character", default = NULL,
+                help = paste("K-MetStat spike-in counts for --norm kmet (EpiCypher SNAP-CUTANA",
+                             "barcoded nucleosomes, cat. 19-1002). ALLOWED:",
+                             "'sheet' (use a 'kmet_ontarget_reads' column in --sheet) OR a PATH to",
+                             "either kmet_summary.tsv (needs 'sample' + 'on_target_pairs') or",
+                             "normfactors.csv (needs 'sample' + 'spikein_reads_S') from the",
+                             "kmet_spikein_* scripts. The on-target barcode COUNT is read, not any",
+                             "precomputed factor, so the factor is re-derived against csaw's own",
+                             "lib.size. Any qc / kmet_status / worst_offtarget_pct column present is",
+                             "surfaced as a warning. [default: none]")),
     make_option("--force_norm", action = "store_true", default = FALSE,
                 help = "Apply spikein/sf even when batch is non-separable. [default: FALSE]"),
     make_option("--reference_shift", type = "double", default = NULL,
@@ -386,6 +548,104 @@ resolve_normfactors <- function(opt, meta) {
   out
 }
 
+# -----------------------------------------------------------------------------
+# K-MetStat spike-in counts (v10)
+#
+# WHY WE READ COUNTS AND NOT THE PRECOMPUTED norm_factor COLUMN.
+#   kmet_spikein_normfactors.R already emits norm_factor = k * S_i / L_i, where
+#   L_i is whatever library size THAT script was handed (--libsizes, or the
+#   aligned_fragments it counted itself with samtools). csaw's lib.size is its own
+#   'totals': the reads surviving readParam(minq=20, dedup=TRUE, pe="both",
+#   max.frag). Those two numbers are close but NOT identical. edgeR's effective
+#   library is
+#         Ntilde_i = lib.size_i * nf_i
+#   so importing a factor built on a different denominator gives
+#         Ntilde_i  ∝  S_i * (csaw_lib_i / L_i)
+#   -- silently wrong by the ratio of the two denominators, in a way nothing
+#   downstream would flag. Taking the raw on-target barcode COUNT S_i and dividing
+#   by csaw's OWN lib.size makes Ntilde_i ∝ S_i exactly, which is the entire point
+#   of a spike-in. It also means the K-MetStat QC and the csaw run can never drift
+#   apart through a filtering mismatch.
+#
+#   This is also why 'kmet' and 'spikein' share one line of algebra in
+#   compute_nf(): they are the same estimator and differ ONLY in what is taken as
+#   the invariant reference -- K-MetStat nucleosomes (added before the antibody,
+#   so they report antibody+MNase capture efficiency) vs E. coli carryover (added
+#   after digestion, so it reports library/sequencing depth only).
+#
+# NAMING: kmet files are keyed by FOLDER (the sample identity used across this
+#   project). SampleID in --sheet must match that key.
+# -----------------------------------------------------------------------------
+resolve_kmet <- function(opt, meta) {
+  if (is.null(opt$kmet)) return(NULL)
+  count_cols <- c("kmet_ontarget_reads",   # manifest / sample sheet
+                  "spikein_reads_S",       # normfactors.csv
+                  "on_target_pairs")       # kmet_summary.tsv
+  qc_cols  <- c("kmet_status", "qc")
+  off_cols <- c("kmet_worst_offtgt", "worst_offtarget_pct")
+
+  if (identical(opt$kmet, "sheet")) {
+    hit <- intersect(count_cols, colnames(meta))
+    if (!length(hit))
+      stop("--kmet sheet requested but --sheet has none of: ", paste(count_cols, collapse = ", "))
+    v <- setNames(suppressWarnings(as.numeric(meta[[hit[1]]])), meta$SampleID)
+    tab <- meta; idcol <- "SampleID"
+    say(sprintf("[KMET] source: --sheet column '%s'.", hit[1]))
+  } else {
+    if (!file.exists(opt$kmet)) stop("--kmet file not found: ", opt$kmet)
+    first <- readLines(opt$kmet, n = 1L, warn = FALSE)
+    sep   <- if (grepl("\t", first)) "\t" else ","
+    tab   <- read.table(opt$kmet, header = TRUE, sep = sep, quote = "\"",
+                        stringsAsFactors = FALSE, check.names = FALSE, fill = TRUE)
+    ccol <- intersect(count_cols, colnames(tab))
+    if (!length(ccol))
+      stop("--kmet: no on-target COUNT column. Looked for: ", paste(count_cols, collapse = ", "),
+           ". Columns present: ", paste(colnames(tab), collapse = ", "))
+    icol <- intersect(c("SampleID", "sample", "folder", "ID", "Sample"), colnames(tab))
+    if (!length(icol))
+      stop("--kmet: no ID column. Looked for: SampleID/sample/folder/ID/Sample. Columns present: ",
+           paste(colnames(tab), collapse = ", "))
+    idcol <- icol[1]
+    ids <- as.character(tab[[idcol]])
+    v   <- setNames(suppressWarnings(as.numeric(tab[[ccol[1]]]))[match(meta$SampleID, ids)], meta$SampleID)
+    say(sprintf("[KMET] source: %s | ID column '%s' | count column '%s'.",
+                basename(opt$kmet), idcol, ccol[1]))
+  }
+
+  if (any(is.na(v)))
+    stop("--kmet: no on-target count for: ", paste(meta$SampleID[is.na(v)], collapse = ", "),
+         "\n       kmet files are keyed by FOLDER; SampleID in --sheet must match that key.")
+  if (any(v <= 0))
+    stop("--kmet: non-positive on-target count for: ", paste(meta$SampleID[v <= 0], collapse = ", "))
+  if (any(v < 1000))
+    say(sprintf("[KMET] WARNING: <1000 on-target barcode reads for %s. EpiCypher's guidance is that thousands are needed to sample the panel; below that the factor is Poisson noise and it lands in every logFC.",
+                paste(meta$SampleID[v < 1000], collapse = ", ")))
+
+  # Surface whatever QC the file carries. Flags only -- never blocks, because the
+  # decision of whether a flagged anchor is still worth running belongs to you.
+  ridx <- if (identical(opt$kmet, "sheet")) seq_len(nrow(meta))
+          else match(meta$SampleID, as.character(tab[[idcol]]))
+  qhit <- intersect(qc_cols, colnames(tab))
+  if (length(qhit)) {
+    st  <- as.character(tab[[qhit[1]]])[ridx]
+    bad <- meta$SampleID[!is.na(st) & !grepl("^(OK|PASS)", toupper(st))]
+    if (length(bad))
+      say(sprintf("[KMET] WARNING: kmet QC != OK (column '%s') for: %s. Factors still applied.",
+                  qhit[1], paste(bad, collapse = ", ")))
+  }
+  ohit <- intersect(off_cols, colnames(tab))
+  if (length(ohit)) {
+    wo  <- suppressWarnings(as.numeric(tab[[ohit[1]]]))[ridx]
+    bad <- meta$SampleID[!is.na(wo) & wo >= 20]
+    if (length(bad))
+      say(sprintf("[KMET] WARNING: worst off-target PTM recovery >=20%% (EpiCypher's specificity bar) for: %s. Under a depleting drug this is usually background, which INFLATES the anchor and EXAGGERATES apparent global loss.",
+                  paste(bad, collapse = ", ")))
+  }
+  say(sprintf("[KMET] on-target barcode reads: %s",
+              paste(sprintf("%s=%.0f", meta$SampleID, v), collapse = "  ")))
+  v
+}
+
 resolve_greenlist <- function(opt) {
   if (is.null(opt$greenlist)) return(NULL)
   if (!file.exists(opt$greenlist)) stop("--greenlist file not found: ", opt$greenlist)
@@ -518,7 +778,7 @@ count_and_filter_multi <- function(bams, opt, param, igg_bams, sizes, group_key 
 # =============================================================================
 # Per-method normalization factors -- unchanged from v6 (audit in header)
 # =============================================================================
-compute_nf <- function(method, y0, win, bins, green, spike_v, sf_v) {
+compute_nf <- function(method, y0, win, bins, green, spike_v, sf_v, kmet_v = NULL) {
   cn <- colnames(y0)
   if (method == "libsize") {
     nf <- rep(1, ncol(y0))
@@ -531,6 +791,16 @@ compute_nf <- function(method, y0, win, bins, green, spike_v, sf_v) {
     sr <- spike_v[cn]; nf <- sr / y0$samples$lib.size; nf <- nf / exp(mean(log(nf)))
   } else if (method == "sf") {
     v <- sf_v[cn]; nf <- v / exp(mean(log(v)))
+  } else if (method == "kmet") {
+    # Identical algebra to 'spikein' -- deliberately. A fixed amount of K-MetStat
+    # nucleosome went into every reaction, so the recovered on-target barcode count
+    # S_i reads out capture efficiency x depth for the whole antibody -> MNase ->
+    # library -> sequencing chain. Setting the effective library proportional to
+    # S_i is what makes a global shift survive normalization:
+    #     nf_i = k * S_i / lib.size_i   =>   Ntilde_i = lib.size_i * nf_i = k * S_i
+    # Dividing by csaw's OWN lib.size (not the one the kmet script used) is what
+    # keeps that proportionality exact -- see resolve_kmet().
+    kr <- kmet_v[cn]; nf <- kr / y0$samples$lib.size; nf <- nf / exp(mean(log(nf)))
   } else stop("Unknown normalization method: ", method)
   setNames(as.numeric(nf), cn)
 }
@@ -543,7 +813,11 @@ dir_labels <- function(opt, norm = NULL) {
   # background (which cannot see the global offset), a positive region is only a
   # *relative* gain, so the neutral term "gained" is kept to avoid over-claiming
   # biological resistance the normalization cannot support.
-  anchored <- !is.null(norm) && norm %in% c("spikein", "sf")
+  # spikein / sf / kmet each tie the effective library to an EXTERNAL invariant,
+  # so a global shift survives and a positive logFC is interpretable as retention.
+  # libsize / background / greenlist re-centre to the data itself and cannot see
+  # the offset, so they get the neutral word.
+  anchored <- !is.null(norm) && norm %in% c("spikein", "sf", "kmet")
   if (opt$test == "contrast") {
     up_lab <- if (anchored) "resistant" else "gained"
     list(up = up_lab, down = "lost", legend_up = up_lab, legend_down = "lost")
@@ -1336,10 +1610,15 @@ mark_panel_data <- function(mark_name, g1key, g2key, methods, ss, opt, param, gr
   }
   out <- setNames(vector("list", length(methods)), methods)
   for (m in methods) {
-    if (m == "sf")                          { out[[m]] <- NULL; next }
+    # sf and kmet are per-sample factor/count tables built for the TESTED mark's
+    # libraries. The orthogonal control mark is a different set of libraries, which
+    # will not be in that file, so those panels are skipped rather than guessed. If
+    # you want a kmet-normalized control-mark panel, run kmet_spikein_count.sh with
+    # --factor <control mark> and analyse it as its own --mark.
+    if (m %in% c("sf", "kmet"))             { out[[m]] <- NULL; next }
     if (m == "spikein" && is.null(sv))      { out[[m]] <- NULL; next }
     if (m == "greenlist" && is.null(green)) { out[[m]] <- NULL; next }
-    nf <- tryCatch(compute_nf(m, y0, win, bins, green, sv, NULL),
+    nf <- tryCatch(compute_nf(m, y0, win, bins, green, sv, NULL, NULL),
                    error = function(e) { say(sprintf("[ORTHO] method '%s' failed for control mark: %s", m, conditionMessage(e))); NULL })
     if (is.null(nf)) { out[[m]] <- NULL; next }
     y <- y0; y$samples$norm.factors <- nf
@@ -1421,7 +1700,7 @@ report_filter_ab <- function(ab, tag, norm, outdir, opt) {
 # =============================================================================
 # Per-normalization driver (MULTI-SIZE aware)
 # =============================================================================
-run_norm <- function(method, per_size, bins, green, spike_v, sf_v, peaks_gr, indep_list,
+run_norm <- function(method, per_size, bins, green, spike_v, sf_v, kmet_v, peaks_gr, indep_list,
                      ab, tag, outdir, opt, meta, cond_key, genes_gr, sizes, sig_idx,
                      skip_diag) {
   say(sprintf("\n========== NORMALIZATION: %s ==========", method))
@@ -1430,7 +1709,7 @@ run_norm <- function(method, per_size, bins, green, spike_v, sf_v, peaks_gr, ind
   # nf computed ONCE from the size-independent inputs, on the signal-size window object.
   win_sig <- per_size[[sig_idx]]$win
   y0_sig  <- asDGEList(win_sig); colnames(y0_sig) <- meta$SampleID
-  nf      <- compute_nf(method, y0_sig, win_sig, bins, green, spike_v, sf_v)
+  nf      <- compute_nf(method, y0_sig, win_sig, bins, green, spike_v, sf_v, kmet_v)
 
   # build a per-size DGEList list, all carrying the SAME nf + sample metadata.
   y_list <- vector("list", length(sizes)); win_gr_list <- vector("list", length(sizes))
@@ -1475,12 +1754,13 @@ main <- function() {
   dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 
   methods_req <- tolower(trimws(strsplit(opt$norm, ",")[[1]])); methods_req <- unique(methods_req[nzchar(methods_req)])
-  allowed <- c("libsize", "background", "greenlist", "spikein", "sf")
+  allowed <- c("libsize", "background", "greenlist", "spikein", "sf", "kmet")
   bad <- setdiff(methods_req, allowed)
   if (length(bad)) stop("Unknown --norm token(s): ", paste(bad, collapse = ", "), ". Allowed: ", paste(allowed, collapse = ", "))
   if ("greenlist" %in% methods_req && is.null(opt$greenlist))   stop("--norm includes 'greenlist' but --greenlist not given.")
   if ("spikein"   %in% methods_req && is.null(opt$spikein))     stop("--norm includes 'spikein' but --spikein not given.")
   if ("sf"        %in% methods_req && is.null(opt$normfactors)) stop("--norm includes 'sf' but --normfactors not given.")
+  if ("kmet"      %in% methods_req && is.null(opt$kmet))        stop("--norm includes 'kmet' but --kmet not given (use --kmet sheet, or a path to kmet_summary.tsv / normfactors.csv).")
 
   sizes   <- parse_window_sizes(opt$window)
   sig_idx <- which.min(abs(sizes - 2000L))            # representative size for QC/signal (nearest 2 kb)
@@ -1491,7 +1771,7 @@ main <- function() {
   tag <- if (opt$test == "contrast")
     sprintf("%s_%s_vs_%s", opt$mark, safe_token(opt$group1), safe_token(opt$group2))
   else sprintf("%s_interaction", opt$mark)
-  say(sprintf("=== csaw v9 | mark=%s | test=%s | windows=%s | filter=%s | tag=%s ===",
+  say(sprintf("=== csaw v10 | mark=%s | test=%s | windows=%s | filter=%s | tag=%s ===",
               opt$mark, opt$test, paste(sizes, collapse = ","), opt$filter_mode, tag))
   say(sprintf("[SAMPLES] %d libraries: %s", nrow(meta), paste(meta$SampleID, collapse = ", ")))
 
@@ -1501,7 +1781,10 @@ main <- function() {
 
   methods <- methods_req
   if (!ab$allow_spikein && !opt$force_norm) {
-    drop <- intersect(c("spikein", "sf"), methods)
+    # kmet is magnitude-anchored like spikein/sf, so it is batch-bound in exactly
+    # the same way: a spike-in scalar compared across a non-separable batch is
+    # confounding batch with treatment. Same gate, same --force_norm override.
+    drop <- intersect(c("spikein", "sf", "kmet"), methods)
     if (length(drop)) say(sprintf("[BATCH] dropping %s (batch %s, not separable; override with --force_norm).", paste(drop, collapse = ","), ab$status))
     methods <- setdiff(methods, drop)
   } else if (!ab$allow_spikein && opt$force_norm) {
@@ -1520,6 +1803,7 @@ main <- function() {
   green_gr <- if ("greenlist" %in% methods) resolve_greenlist(opt) else NULL
   spike_v  <- if ("spikein"   %in% methods) resolve_spikein(opt, meta) else NULL
   sf_v     <- if ("sf"        %in% methods) resolve_normfactors(opt, meta) else NULL
+  kmet_v   <- if ("kmet"      %in% methods) resolve_kmet(opt, meta) else NULL
   genes_gr <- resolve_genes(opt)
 
   group_key <- paste(meta$.cond, meta$.treat, sep = "|")
@@ -1561,7 +1845,7 @@ main <- function() {
   eff_by_method <- list(); sig_by_method <- list(); disp_by_method <- list(); ab_by_method <- list()
   analysis_libs <- NULL
   for (m in methods) {
-    r <- run_norm(m, per_size, bins, green, spike_v, sf_v, peaks_gr, indep_list,
+    r <- run_norm(m, per_size, bins, green, spike_v, sf_v, kmet_v, peaks_gr, indep_list,
                   ab, tag, opt$outdir, opt, meta, cond_key, genes_gr, sizes, sig_idx, opt$skip_diagnostics)
     df_by_method[[m]] <- r$df; counts_by_method[[m]] <- r$counts
     nf_by_method[[m]] <- r$nf; eff_by_method[[m]] <- r$eff_libsize
@@ -1610,7 +1894,7 @@ main <- function() {
 
   # ---- summary report ----
   summ <- file.path(opt$outdir, sprintf("%s_summary.txt", tag))
-  hdr <- c(strrep("=", 72), sprintf("csaw v9 summary | %s", tag), strrep("=", 72), "",
+  hdr <- c(strrep("=", 72), sprintf("csaw v10 summary | %s", tag), strrep("=", 72), "",
            sprintf("Windows: %s bp | filter_mode: %s | signal size: %d bp", paste(sizes, collapse = ","), opt$filter_mode, sizes[sig_idx]),
            sprintf("Bigwig: %s", if (opt$bigwig) sprintf("yes, %d bp bins -> <outdir>/<norm>/<SampleID>_<norm>.bw", opt$bigwig_binsize) else "no (--bigwig to enable)"),
            sprintf("Significant region counts per normalization (FDR<%.2g, |logFC|>%.2g):", opt$fdr, opt$lfc))
