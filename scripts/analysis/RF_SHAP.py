@@ -947,9 +947,13 @@ def _shap_values(model, X):
     return np.asarray(sv)
 
 
-def _draw_shap_panels(ax_bar, ax_bee, sv, X, feat_names, title_extra=""):
+def _draw_shap_panels(ax_bar, ax_bee, sv, X, feat_names, title_extra="",
+                      feature_order=None):
     mean_shap = np.abs(sv).mean(axis=0).ravel()
-    order = np.argsort(mean_shap)[::-1]
+    # feature_order lets the caller impose a shared ranking across panels
+    # (e.g. so A and B beeswarm plots list marks in the same top-to-bottom order).
+    order = np.array(feature_order) if feature_order is not None \
+        else np.argsort(mean_shap)[::-1]
     top_idx = int(np.argmax(mean_shap))
     bar_colors = ["#C0392B" if int(i) == top_idx else "#1A5276" for i in order]
     bars = ax_bar.barh([feat_names[i] for i in order[::-1]],
@@ -1002,16 +1006,37 @@ def plot_shap(results_by_mode, feat_names, X_by_mode, outdir, comparison,
     fig, axes = plt.subplots(
         2, 2, figsize=(11, max(9, 0.6 * len(feat_names) + 4)),
         gridspec_kw={"width_ratios": [1.0, 1.2]})
-    for r_idx, comp in enumerate(["A", "B"]):
-        if comp not in results_by_mode: continue
+
+    # Pre-compute SHAP for both comparisons so we can derive a shared feature
+    # order from A (top panel) and apply it to B (bottom panel), keeping the
+    # y-axis ranking identical across both beeswarm plots.
+    sv_by_comp = {}
+    for comp in ["A", "B"]:
+        if comp not in results_by_mode:
+            continue
         res = results_by_mode[comp]; X, row_ids = X_by_mode[comp]
         sv = _shap_values(res["model_refit"], X)
+        sv_by_comp[comp] = (sv, X, row_ids)
         sv_store[comp] = (sv, X)
         write_shap_per_row(sv, row_ids, feat_names, outdir, model_name, comp,
                            row_id_col)
+
+    # Derive shared order from A; fall back to B if A is missing.
+    shared_order = None
+    for comp in ["A", "B"]:
+        if comp in sv_by_comp:
+            sv_anchor, _, _ = sv_by_comp[comp]
+            shared_order = np.argsort(np.abs(sv_anchor).mean(axis=0).ravel())[::-1]
+            break
+
+    for r_idx, comp in enumerate(["A", "B"]):
+        if comp not in sv_by_comp:
+            continue
+        sv, X, _ = sv_by_comp[comp]
         spec = COMPARISON_SPEC[comp]
         _draw_shap_panels(axes[r_idx, 0], axes[r_idx, 1], sv, X, feat_names,
-                          title_extra=f"\n({spec['label']})")
+                          title_extra=f"\n({spec['label']})",
+                          feature_order=shared_order)
     fig.suptitle(f"Parental Features \u2192 Compartment Switch Prediction "
                  f"(SHAP, {model_disp})"
                  "\nCompartment-resolved (A on top, B on bottom)",
