@@ -247,7 +247,7 @@ def parse_track_name(col, conditions, treatments):
 
 def add_log2_ratio(df, signal_cols, conditions=("b10", "parental"),
                    treatments=("unc", "epz"), migr_num="b10", migr_den="parental",
-                   eps=1.0, abbrev=None):
+                   eps=None, eps_frac=0.01, abbrev=None):
     """
     Auto-build migration + drug log2 contrasts, per stat.
     """
@@ -268,14 +268,42 @@ def add_log2_ratio(df, signal_cols, conditions=("b10", "parental"),
 
     log2_cols = []
 
+    def resolve_eps(a, b):
+        """Pseudocount for THIS contrast.
+
+        If --eps was given, use it verbatim. Otherwise derive it from the data:
+        eps_frac (default 1%) of the median signal pooled across the two tracks
+        being compared. Computed per contrast, so each mark AND each stat gets a
+        pseudocount on its own scale (a 'mean' track sits near 0.02; a 'coverage'
+        track near 0.5 -- one global eps cannot suit both).
+
+        WHY THIS MATTERS: a fixed eps=1.0 is only appropriate for raw counts.
+        Against CPM-normalised bigWig means (~0.02 per 250kb bin) it swamps the
+        signal, collapsing log2((a+1)/(b+1)) into a scaled DIFFERENCE and
+        compressing every ratio toward zero. It is also not monotone in the
+        ratio, so rank-based tests downstream see a reordered variable.
+        """
+        if eps is not None:
+            return float(eps)
+        pooled = np.concatenate([
+            pd.to_numeric(a, errors="coerce").dropna().to_numpy(),
+            pd.to_numeric(b, errors="coerce").dropna().to_numpy()])
+        med = float(np.nanmedian(pooled)) if pooled.size else 0.0
+        e = eps_frac * med
+        if not np.isfinite(e) or e <= 0:
+            e = 1e-6
+            print(f"  [LOG2] (warn) median signal non-positive; eps fallback {e:g}")
+        return e
+
     def emit(num_key, den_key, num_label, den_label, mark, stat):
         if num_key in idx and den_key in idx:
             a, b = df[idx[num_key]], df[idx[den_key]]
             stat_sfx = f"_{stat}" if stat else ""
             out_name = f"log2ratio_{den_label}-{num_label}_{mark}{stat_sfx}"
-            df[out_name] = np.log2((a + eps) / (b + eps))
+            e = resolve_eps(a, b)
+            df[out_name] = np.log2((a + e) / (b + e))
             log2_cols.append(out_name)
-            print(f"  [LOG2] {out_name} = log2(({idx[num_key]}+{eps})/({idx[den_key]}+{eps}))")
+            print(f"  [LOG2] {out_name} = log2(({idx[num_key]}+{e:.6g})/({idx[den_key]}+{e:.6g}))")
             return True
         return False
 
@@ -413,8 +441,19 @@ Examples:
                         help="Migration numerator condition (default: B10)")
     parser.add_argument("--migr_den", default="Parental",
                         help="Migration denominator condition (default: Parental)")
-    parser.add_argument("--eps", type=float, default=1.0,
-                        help="Pseudocount for log2 ratio (default: 1.0)")
+    parser.add_argument("--eps", type=float, default=None,
+                        help="FIXED pseudocount for the log2 ratio. Default: not set, "
+                             "in which case eps is computed from the data per contrast "
+                             "as --eps_frac of the median pooled signal (recommended). "
+                             "Only pass this if you need a specific value. NOTE: 1.0 is "
+                             "appropriate for raw counts but far too large for "
+                             "CPM-normalised bigWig means (~0.02 per 250kb bin), where "
+                             "it compresses every log2 ratio toward zero.")
+    parser.add_argument("--eps_frac", type=float, default=0.01,
+                        help="Data-driven pseudocount, as a fraction of the median "
+                             "pooled signal of the two tracks in each contrast "
+                             "(default: 0.01 = 1%%). Scales automatically per mark and "
+                             "per stat. Ignored when --eps is given.")
     parser.add_argument("--log2", dest="want_log2", action="store_true",
                         help="Auto-compute migration + drug log2 contrasts")
     parser.set_defaults(want_log2=False)

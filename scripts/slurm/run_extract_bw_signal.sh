@@ -23,4 +23,4 @@ python scripts/preprocessing/extract_bigwig_signal.py \
     --bw data/processed/mean_bigwigs/*.mean.bw \
     --output_dir data/processed \
     --output_file cut_run_signal_table_250kb.txt \
-    --log2 --eps 0.0002
+    --log2 
