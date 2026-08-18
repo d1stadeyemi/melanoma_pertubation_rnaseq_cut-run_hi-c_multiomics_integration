@@ -24,3 +24,5 @@ python scripts/preprocessing/extract_bigwig_signal.py \
     --output_dir data/processed \
     --output_file cut_run_signal_table_250kb.txt \
     --log2 
+
+conda deactivate
