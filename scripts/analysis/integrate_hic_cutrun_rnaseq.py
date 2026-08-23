@@ -77,6 +77,19 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.stats import rankdata, spearmanr, norm
 
+def read_table(path, **kw):
+    """Read a delimited text file, sniffing the separator.
+
+    DESeq2 exports are often .csv while genomic tables are .tsv; guessing wrong
+    silently yields a single-column frame and a confusing 'column not found'
+    error, so the delimiter is detected from the header rather than assumed.
+    """
+    with open(path) as fh:
+        head = fh.readline()
+    sep = "," if head.count(",") > head.count("\t") else "\t"
+    return pd.read_csv(path, sep=sep, low_memory=False, **kw)
+
+
 plt.rcParams.update({
     "font.family": "sans-serif", "font.size": 10, "axes.labelsize": 11,
     "axes.titlesize": 11, "axes.spines.top": False, "axes.spines.right": False,
@@ -302,7 +315,20 @@ Example:
     p.add_argument("--gene_map", default=None,
                    help="Gene -> bin table, needed if --deseq2 lacks coordinates.")
     p.add_argument("--gene_map_gene_col", default="gene_name")
-    p.add_argument("--gene_map_coord_col", default="coordinate")
+    p.add_argument("--gene_map_coord_col", default="coordinate",
+                   help="Bin coordinate column in --gene_map. If absent and the "
+                        "file has chr/start/end, bins are computed on the fly "
+                        "(see --bin_size and --gene_anchor).")
+    p.add_argument("--bin_size", type=int, default=250000,
+                   help="Bin size used to place genes when --gene_map is a BED "
+                        "without a coordinate column (default 250000).")
+    p.add_argument("--gene_anchor", default="tss", choices=["tss", "midpoint"],
+                   help="Which point of the gene decides its bin. 'tss' uses "
+                        "the strand-aware start (falls back to start when "
+                        "strand is '.'); 'midpoint' uses the gene body centre. "
+                        "TSS is the usual choice for relating expression to "
+                        "local chromatin; midpoint suits very long genes that "
+                        "span several bins.")
 
     p.add_argument("--expr_agg", default="mean", choices=["mean", "median"],
                    help="How gene LFCs are summarised to one value per bin.")
@@ -316,6 +342,17 @@ Example:
     p.add_argument("--restrict_to", nargs="+", default=None,
                    help="Optional values of --hic_category_col to keep "
                         "(e.g. Switch_AtoB Switch_BtoA).")
+    p.add_argument("--color_by", default="auto", choices=["auto", "continuous", "category"],
+                   help="Point colour: 'continuous' = diverging map on delta PC1; "
+                        "'category' = discrete colours from --hic_category_col "
+                        "(clearer when --restrict_to leaves only two groups, "
+                        "where delta PC1 is bimodal rather than a continuum); "
+                        "'auto' (default) picks category when --restrict_to is "
+                        "given and 2-4 groups remain, else continuous. NOTE this "
+                        "affects the FIGURE ONLY -- the partial correlation always "
+                        "conditions on the continuous delta PC1, because adjusting "
+                        "on a categorised confounder leaves residual confounding "
+                        "and would inflate the partial rho.")
     p.add_argument("--block_len", type=int, default=None,
                    help="Block length in bins for bootstrap/permutation. "
                         "Default: estimated from the delta-PC1 autocorrelation.")
@@ -335,7 +372,7 @@ def main():
 
     # ---- Hi-C ------------------------------------------------------------
     print("[INFO] Loading Hi-C table...")
-    hic = pd.read_csv(a.hic, sep="\t", low_memory=False)
+    hic = read_table(a.hic)
     for c in (a.hic_coord_col, a.hic_delta_col):
         if c not in hic.columns:
             sys.exit(f"[ERROR] '{c}' not in {a.hic}. Columns: {list(hic.columns)[:25]}")
@@ -356,7 +393,7 @@ def main():
 
     # ---- CUT&RUN ---------------------------------------------------------
     print("[INFO] Loading CUT&RUN table...")
-    cr = pd.read_csv(a.cutrun, sep="\t", low_memory=False)
+    cr = read_table(a.cutrun)
     ck = a.cutrun_coord_col
     if ck is None:
         for cand in ("coordinate", "extra_1"):
@@ -376,9 +413,10 @@ def main():
 
     # ---- DESeq2 ----------------------------------------------------------
     print("[INFO] Loading DESeq2 results...")
-    de = pd.read_csv(a.deseq2, sep="\t", low_memory=False)
+    de = read_table(a.deseq2)
     if a.deseq2_lfc_col not in de.columns:
-        sys.exit(f"[ERROR] '{a.deseq2_lfc_col}' not in {a.deseq2}.")
+        sys.exit(f"[ERROR] '{a.deseq2_lfc_col}' not in {a.deseq2}.\n"
+                 f"        Available columns: {list(de.columns)}")
     gcol = a.deseq2_gene_col or de.columns[0]
     de["_lfc_"] = pd.to_numeric(de[a.deseq2_lfc_col], errors="coerce")
     if a.deseq2_padj_col in de.columns:
@@ -389,12 +427,42 @@ def main():
     if a.deseq2_coord_col and a.deseq2_coord_col in de.columns:
         de["coord"] = de[a.deseq2_coord_col].astype(str).str.strip()
     elif a.gene_map:
-        gm = pd.read_csv(a.gene_map, sep="\t", low_memory=False)
-        for c in (a.gene_map_gene_col, a.gene_map_coord_col):
-            if c not in gm.columns:
-                sys.exit(f"[ERROR] '{c}' not in {a.gene_map}.")
-        gm = gm[[a.gene_map_gene_col, a.gene_map_coord_col]].copy()
-        gm.columns = ["_g_", "coord"]
+        gm = read_table(a.gene_map)
+        if a.gene_map_gene_col not in gm.columns:
+            sys.exit(f"[ERROR] '{a.gene_map_gene_col}' not in {a.gene_map}. "
+                     f"Columns: {list(gm.columns)}")
+
+        if a.gene_map_coord_col in gm.columns:
+            gm = gm[[a.gene_map_gene_col, a.gene_map_coord_col]].copy()
+            gm.columns = ["_g_", "coord"]
+        else:
+            # BED-style map: derive the bin from coordinates. Bins are named
+            # 1-based inclusive ('chr1:1-250000') to match the Hi-C convention.
+            need = [c for c in ("chr", "start", "end") if c not in gm.columns]
+            if need:
+                sys.exit(f"[ERROR] --gene_map has neither '{a.gene_map_coord_col}' "
+                         f"nor chr/start/end (missing {need}).")
+            st = pd.to_numeric(gm["start"].astype(str).str.replace(",", "",
+                               regex=False), errors="coerce")
+            en = pd.to_numeric(gm["end"].astype(str).str.replace(",", "",
+                               regex=False), errors="coerce")
+            if a.gene_anchor == "midpoint":
+                anchor = (st + en) / 2.0
+            else:
+                strand = (gm["strand"].astype(str) if "strand" in gm.columns
+                          else pd.Series(["."] * len(gm)))
+                anchor = np.where(strand.values == "-", en, st)
+                anchor = pd.Series(anchor, index=gm.index).astype(float)
+            bs = a.bin_size
+            idx = np.floor(anchor / bs)
+            gm = gm.assign(
+                _g_=gm[a.gene_map_gene_col].astype(str).str.strip(),
+                coord=(gm["chr"].astype(str).str.strip() + ":"
+                       + (idx * bs + 1).astype("Int64").astype(str) + "-"
+                       + ((idx + 1) * bs).astype("Int64").astype(str)))
+            gm = gm.loc[anchor.notna(), ["_g_", "coord"]]
+            print(f"       gene map binned on the fly at {bs:,} bp "
+                  f"using gene {a.gene_anchor}")
         gm["_g_"] = gm["_g_"].astype(str).str.strip()
         gm["coord"] = gm["coord"].astype(str).str.strip()
         de["_g_"] = de[gcol].astype(str).str.strip()
@@ -481,37 +549,100 @@ def main():
     # ---- Figure ----------------------------------------------------------
     n = len(a.mark_cols)
     nc = min(2, n); nr = (n + nc - 1) // nc
-    fig, axes = plt.subplots(nr, nc, figsize=(5.6 * nc, 4.9 * nr))
+    fig, axes = plt.subplots(nr, nc, figsize=(4.9 * nc, 4.4 * nr),
+                             constrained_layout=True)
     axes = np.atleast_1d(axes).flatten()
     vmax = float(np.nanpercentile(np.abs(df["_dpc1_"]), 98)) or 1.0
+
+    use_cat = False
+    if "_cat_" in df.columns:
+        levels = [c for c in df["_cat_"].dropna().unique()]
+        if a.color_by == "category":
+            use_cat = 2 <= len(levels) <= 6
+        elif a.color_by == "auto":
+            use_cat = bool(a.restrict_to) and 2 <= len(levels) <= 4
+    if use_cat:
+        levels = sorted(df["_cat_"].dropna().unique())
+        # Warm = movement toward A, cool = movement toward B, matching the
+        # convention used elsewhere in the project.
+        pal = ["#1F6187", "#C0392B", "#0F7B6C", "#B07D0A", "#6B1D16", "#3F8CAE"]
+        toB = [l for l in levels if "toB" in l.replace(" ", "")]
+        cmap_cat = {}
+        for i, l in enumerate(levels):
+            cmap_cat[l] = "#1F6187" if l in toB and len(levels) == 2 else (
+                "#C0392B" if len(levels) == 2 else pal[i % len(pal)])
     sc = None
     for ax, (col, nm) in zip(axes, zip(a.mark_cols, names)):
         sub = df.dropna(subset=[col])
-        sc = ax.scatter(sub[col], sub["expr"], c=sub["_dpc1_"], cmap="RdBu_r",
-                        vmin=-vmax, vmax=vmax, s=16, alpha=0.8,
-                        edgecolors="none", rasterized=True)
-        ax.axhline(0, color="#BBBBBB", lw=0.6); ax.axvline(0, color="#BBBBBB", lw=0.6)
+        # Point size and alpha scale with n so a 5,000-bin panel does not
+        # become a solid block while a 400-bin panel stays readable.
+        ss = float(np.clip(2200.0 / max(len(sub), 1), 4, 22))
+        al = float(np.clip(900.0 / max(len(sub), 1), 0.30, 0.85))
+        if use_cat:
+            for lv in levels:
+                d = sub[sub["_cat_"] == lv]
+                ax.scatter(d[col], d["expr"], c=cmap_cat[lv], s=ss, alpha=al,
+                           linewidths=0, rasterized=True, zorder=2,
+                           label=f"{lv} (n={len(d):,})")
+            ax.legend(frameon=False, fontsize=7.6, loc="lower left",
+                      markerscale=1.8, handletextpad=0.3)
+        else:
+            sc = ax.scatter(sub[col], sub["expr"], c=sub["_dpc1_"], cmap="RdBu_r",
+                            vmin=-vmax, vmax=vmax, s=ss, alpha=al, linewidths=0,
+                            rasterized=True, zorder=2)
+        ax.axhline(0, color="#BBBBBB", lw=0.6, zorder=1)
+        ax.axvline(0, color="#BBBBBB", lw=0.6, zorder=1)
+
+        # Non-parametric trend: median expression within deciles of mark change,
+        # with an interquartile ribbon. A monotone trend line is what makes a
+        # Spearman rho of ~0.15 visible; without it the panel reads as noise.
+        x = sub[col].to_numpy(); y = sub["expr"].to_numpy()
+        qs = np.nanquantile(x, np.linspace(0, 1, 11))
+        qs = np.unique(qs)
+        if len(qs) > 3:
+            cx, cmed, clo, chi = [], [], [], []
+            for i in range(len(qs) - 1):
+                m = (x >= qs[i]) & (x <= qs[i + 1] if i == len(qs) - 2 else x < qs[i + 1])
+                if m.sum() >= 10:
+                    cx.append(np.median(x[m])); cmed.append(np.median(y[m]))
+                    clo.append(np.percentile(y[m], 25)); chi.append(np.percentile(y[m], 75))
+            if len(cx) >= 3:
+                ax.fill_between(cx, clo, chi, color="#333333", alpha=0.12,
+                                lw=0, zorder=3)
+                ax.plot(cx, cmed, color="#222222", lw=1.8, zorder=4)
+                ax.plot(cx, cmed, "o", color="#222222", ms=3.2, zorder=5)
+
         r = st.loc[st["mark"] == nm].iloc[0]
-        ax.set_title(f"{nm}\n"
-                     f"rho={r.spearman_rho:+.2f} "
-                     f"[{r.rho_CI95_lo:+.2f}, {r.rho_CI95_hi:+.2f}], "
-                     f"p={r.p_block_perm:.3g}\n"
-                     f"partial (|dPC1) = {r.partial_rho_given_dPC1:+.2f}, "
-                     f"p={r.p_block_perm_partial:.3g}", fontsize=9)
-        ax.set_xlabel(f"{nm} change  log2(B10/Parental)")
-        ax.set_ylabel(f"bin {a.expr_agg} expression change (log2FC)")
+        pstr = ("< 5e-4" if r.p_block_perm <= 1.0 / (a.n_perm + 1) + 1e-12
+                else f"= {r.p_block_perm:.2g}")
+        ppstr = ("< 5e-4" if r.p_block_perm_partial <= 1.0 / (a.n_perm + 1) + 1e-12
+                 else f"= {r.p_block_perm_partial:.2g}")
+        ax.text(0.03, 0.97,
+                f"$\\rho$ = {r.spearman_rho:+.2f} "
+                f"[{r.rho_CI95_lo:+.2f}, {r.rho_CI95_hi:+.2f}]\n"
+                f"$\\rho_{{partial}}$ = {r.partial_rho_given_dPC1:+.2f} "
+                f"[{r.partial_CI95_lo:+.2f}, {r.partial_CI95_hi:+.2f}]\n"
+                f"$P$ {pstr}; $P_{{partial}}$ {ppstr}\n"
+                f"n = {int(r.n_bins):,} bins",
+                transform=ax.transAxes, ha="left", va="top", fontsize=7.6,
+                linespacing=1.45,
+                bbox=dict(boxstyle="round,pad=0.38", facecolor="white",
+                          edgecolor="#CCCCCC", linewidth=0.6, alpha=0.92),
+                zorder=6)
+        ax.set_title(nm, fontweight="bold", fontsize=10.5, pad=6)
+        ax.set_xlabel(f"{nm} change, log$_2$(B10/Parental)")
+        ax.set_ylabel(f"bin {a.expr_agg} expression change (log$_2$FC)")
+        ax.tick_params(labelsize=9)
     for ax in axes[n:]:
         ax.set_visible(False)
     if sc is not None:
-        cb = fig.colorbar(sc, ax=axes[:n].tolist(), fraction=0.03, pad=0.02)
-        cb.set_label("change in PC1 (B10 - Parental)")
-    fig.suptitle("Chromatin change vs expression change, coloured by compartment change\n"
-                 f"one dot per 250 kb bin; block-resampled statistics "
-                 f"(block = {blk} bins); association, not causation",
-                 fontweight="bold", fontsize=11)
+        cb = fig.colorbar(sc, ax=axes[:n].tolist(), fraction=0.046, pad=0.02,
+                          extend="both")
+        cb.set_label("$\\Delta$PC1 (B10 $-$ Parental)", fontsize=9)
+        cb.ax.tick_params(labelsize=8)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(a.outdir, f"integration_scatter.{ext}"),
-                    bbox_inches="tight", pad_inches=0.06, dpi=600)
+                    bbox_inches="tight", pad_inches=0.04, dpi=600)
     plt.close(fig)
 
     out = df.rename(columns={"_dpc1_": "delta_PC1", "_chr_": "chr"})
