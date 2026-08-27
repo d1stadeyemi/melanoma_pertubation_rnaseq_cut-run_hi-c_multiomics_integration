@@ -343,7 +343,8 @@ def save_output(df, output_dir, output_file):
 def main(bed_file, output_dir, bw_files, summary_stats=None,
          output_file="cut_run_signal_table.txt",
          conditions=("b10", "parental"), treatments=("unc", "epz"),
-         migr_num="b10", migr_den="parental", eps=1.0, want_log2=False):
+         migr_num="b10", migr_den="parental", eps=None, eps_frac=0.01,
+         want_log2=False):
     """
     summary_stats : iterable of stat names from ALLOWED_STATS. Default (None)
                     expands to ALL four ('mean','max','std','coverage').
@@ -394,7 +395,7 @@ def main(bed_file, output_dir, bw_files, summary_stats=None,
         print("[INFO] Log2 ratios (auto: migration + drug axes), per stat:")
         df, _ = add_log2_ratio(df, compare_cols, conditions=conditions,
                                treatments=treatments, migr_num=migr_num,
-                               migr_den=migr_den, eps=eps)
+                               migr_den=migr_den, eps=eps, eps_frac=eps_frac)
     else:
         print("[INFO] --log2 not set; extracting signal only.")
 
@@ -466,4 +467,4 @@ Examples:
          output_file=args.output_file,
          conditions=conditions, treatments=treatments,
          migr_num=args.migr_num, migr_den=args.migr_den,
-         eps=args.eps, want_log2=args.want_log2)
+         eps=args.eps, eps_frac=args.eps_frac, want_log2=args.want_log2)

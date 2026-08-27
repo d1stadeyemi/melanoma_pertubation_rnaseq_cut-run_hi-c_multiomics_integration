@@ -630,7 +630,14 @@ def main():
                           edgecolor="#CCCCCC", linewidth=0.6, alpha=0.92),
                 zorder=6)
         ax.set_title(nm, fontweight="bold", fontsize=10.5, pad=6)
-        ax.set_xlabel(f"{nm} change, log$_2$(B10/Parental)")
+        LABEL_MAP = {
+            "log2ratio_p-b10":       "log$_2$(B10/Parental)",
+            "log2ratio_b10-b10_unc": "log$_2$(B10-UNC/B10-DMSO)",
+            "log2ratio_p-p_unc":     "log$_2$(Par-UNC/Par-DMSO)",
+            "log2ratio_p_unc-b10_unc": "log$_2$(B10-UNC/Par-UNC)",
+        }
+        contrast = next((v for k, v in LABEL_MAP.items() if mark_col.startswith(k)), mark_col)
+        ax.set_xlabel(f"{mark_name} change, {contrast}")
         ax.set_ylabel(f"bin {a.expr_agg} expression change (log$_2$FC)")
         ax.tick_params(labelsize=9)
     for ax in axes[n:]:

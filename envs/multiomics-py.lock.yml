@@ -405,5 +405,6 @@ dependencies:
   - zstd=1.5.7
   - pip:
       - matplotlib-venn==1.1.2
+      - scikit-posthocs==0.14.0
       - upsetplot==0.9.0
   /lustre/isaac24/proj/UTK0009/Muhammad/melanoma_pertubation_rnaseq_cut-run_hi-c_multiomics_integration/conda-envs/multiomics-py

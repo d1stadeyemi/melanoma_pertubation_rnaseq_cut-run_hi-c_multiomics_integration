@@ -19,6 +19,8 @@ dependencies:
   - backports.zstd=1.5.0
   - beautifulsoup4=4.14.3
   - binutils_impl_linux-64=2.45.1
+  - bioconductor-affy=1.84.0
+  - bioconductor-affyio=1.76.0
   - bioconductor-annotationdbi=1.68.0
   - bioconductor-biobase=2.66.0
   - bioconductor-biocfilecache=2.14.0
@@ -51,6 +53,7 @@ dependencies:
   - bioconductor-matrixgenerics=1.18.0
   - bioconductor-metapod=1.14.0
   - bioconductor-mixomics=6.30.0
+  - bioconductor-preprocesscore=1.68.0
   - bioconductor-qvalue=2.38.0
   - bioconductor-rhtslib=3.2.0
   - bioconductor-rsamtools=2.22.0
@@ -61,6 +64,7 @@ dependencies:
   - bioconductor-summarizedexperiment=1.36.0
   - bioconductor-treeio=1.30.0
   - bioconductor-ucsc.utils=1.2.0
+  - bioconductor-vsn=3.74.0
   - bioconductor-xvector=0.46.0
   - bioconductor-zlibbioc=1.52.0
   - bleach=6.3.0
@@ -69,11 +73,11 @@ dependencies:
   - bwidget=1.10.1
   - bzip2=1.0.8
   - c-ares=1.34.6
-  - ca-certificates=2026.5.20
+  - ca-certificates=2026.6.17
   - cached-property=1.5.2
   - cached_property=1.5.2
   - cairo=1.18.4
-  - certifi=2026.5.20
+  - certifi=2026.6.17
   - cffi=2.0.0
   - charset-normalizer=3.4.7
   - comm=0.2.3
@@ -105,6 +109,7 @@ dependencies:
   - h2=4.3.0
   - harfbuzz=14.2.0
   - hpack=4.1.0
+  - htslib=1.23.1
   - httpcore=1.0.9
   - httpx=0.28.1
   - hyperframe=6.1.0
@@ -203,7 +208,7 @@ dependencies:
   - notebook-shim=0.2.4
   - numpy=2.4.4
   - oniguruma=6.9.10
-  - openssl=3.6.2
+  - openssl=3.6.3
   - overrides=7.7.0
   - packaging=26.2
   - pandoc=3.9.0.2
@@ -242,6 +247,7 @@ dependencies:
   - r-base=4.4.3
   - r-base64enc=0.1_6
   - r-bh=1.87.0_1
+  - r-biocmanager=1.30.27
   - r-bit=4.6.0
   - r-bit64=4.8.0
   - r-bitops=1.0_9
@@ -442,6 +448,7 @@ dependencies:
   - r-reformulas=0.4.4
   - r-rematch=2.0.0
   - r-rematch2=2.1.2
+  - r-remotes=2.5.0
   - r-repr=1.1.7
   - r-reprex=2.1.1
   - r-reshape2=1.4.5
@@ -470,7 +477,7 @@ dependencies:
   - r-sparsevctrs=0.3.5
   - r-spatial=7.3_18
   - r-squarem=2026.1
-  - r-statmod=1.5.1
+  - r-statmod=1.5.2
   - r-stringi=1.8.7
   - r-stringr=1.6.0
   - r-survival=3.8_6
@@ -514,6 +521,7 @@ dependencies:
   - rfc3986-validator=0.1.1
   - rfc3987-syntax=1.1.0
   - rpds-py=0.30.0
+  - samtools=1.23.1
   - sed=4.10
   - send2trash=2.1.0
   - setuptools=82.0.1
