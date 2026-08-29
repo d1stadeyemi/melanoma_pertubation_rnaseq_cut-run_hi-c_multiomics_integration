@@ -3,8 +3,8 @@ data/raw/**
 data/interim/**
 data/processed/**
 data/refs/**
-!data/**/README.md            
-!data/**/.gitkeep             
+!data/**/README.md
+!data/**/.gitkeep
 
 # SLURM output dumped at root
 slurm-*.out
@@ -47,7 +47,7 @@ myenv/
 .snakemake/
 
 # Editor
-.vscode/      
+.vscode/
 .idea/
 
 # OS
@@ -56,6 +56,7 @@ Thumbs.db
 
 # Test ipynb
 test.ipynb
+*.ipynb
 
 # Local backups created by patch scripts
 **/*.bak
