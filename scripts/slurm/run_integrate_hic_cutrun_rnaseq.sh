@@ -20,28 +20,28 @@ conda activate multiomics-py
 python scripts/analysis/integrate_hic_cutrun_rnaseq.py \
   --hic data/processed/compartment_change_18AUG2026.txt \
   --hic_coord_col Coord --hic_chr_col Chr \
-  --hic_delta_col "Bottom10-Parental_UNC" \
-  --hic_category_col "Bottom10-Parental_UNC_category" \
+  --hic_delta_col "Bottom10-Parental_DMSO" \
+  --hic_category_col "Bottom10-Parental_DMSO_category" \
   --restrict_to "Switch AtoB" "Switch BtoA" \
   --cutrun data/processed/cut_run_signal_table_250kb.eps_fixed.txt \
   --cutrun_coord_col extra_1 \
-  --mark_cols log2ratio_p_unc-b10_unc_h3k27me3_mean \
+  --mark_cols log2ratio_p-b10_h3k27me3_mean \
   --mark_names H3K27me3 \
-  --deseq2 /lustre/isaac24/proj/UTK0009/Taiwo/2026JUL-Taiwo-A375UNC-RNA/New_Deseq2_Output/BU_vs_PU/tables/20_results_Bottom-10-UNC_vs_Parental-UNC_full.csv \
-  --deseq2_lfc_col log2FoldChange_shrunk \
+  --deseq2 /lustre/isaac24/proj/UTK0009/Taiwo/2026JUL-Taiwo-A375UNC-RNA/New_Deseq2_Output/BD_vs_PD/tables/20_results_Bottom-10-DMSO_vs_Parental-DMSO_full.csv \
+  --deseq2_lfc_col log2FoldChange \
   --gene_map data/processed/GeneListTSShg19_2kb_up_5kb_down.txt \
   --deseq2_gene_col gene_name \
-  --outdir results/exploratory/integration_hic_cutrun_rnaseq/b10U_vs_parU
+  --outdir results/exploratory/integration_hic_cutrun_rnaseq/b10D_vs_parD2
 
-# The code below is used to check how many of the DE genes 
-# are mapped to the gene list used for integration. 
-# It is not part of the main analysis, but it provides 
+# The code below is used to check how many of the DE genes
+# are mapped to the gene list used for integration.
+# It is not part of the main analysis, but it provides
 #useful information about the overlap between the DE genes and the gene list.
 
 python - << 'PY'
 import pandas as pd
 
-DE = "/lustre/isaac24/proj/UTK0009/Taiwo/2026JUL-Taiwo-A375UNC-RNA/New_Deseq2_Output/BU_vs_BD/tables/20_results_Bottom-10-UNC_vs_Bottom-10-DMSO_full.csv"
+DE = "/lustre/isaac24/proj/UTK0009/Taiwo/2026JUL-Taiwo-A375UNC-RNA/New_Deseq2_Output/BU_vs_PU/tables/20_results_Bottom-10-DMSO_vs_Parental-DMSO_full.csv"
 GM = "data/processed/GeneListTSShg19_2kb_up_5kb_down.txt"
 
 de = pd.read_csv(DE)
