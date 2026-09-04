@@ -566,7 +566,7 @@ def main():
         # Warm = movement toward A, cool = movement toward B, matching the
         # convention used elsewhere in the project.
         pal = ["#1F6187", "#C0392B", "#0F7B6C", "#B07D0A", "#6B1D16", "#3F8CAE"]
-        toB = [l for l in levels if "toB" in l.replace(" ", "")]
+        toB = [l for l in levels if l.strip()[-1:].upper() == "B"]
         cmap_cat = {}
         for i, l in enumerate(levels):
             cmap_cat[l] = "#1F6187" if l in toB and len(levels) == 2 else (
