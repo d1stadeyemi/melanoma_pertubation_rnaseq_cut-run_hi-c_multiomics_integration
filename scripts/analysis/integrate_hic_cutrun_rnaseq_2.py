@@ -155,6 +155,17 @@ def _rho(sub, xcol, ycol, zcol, partial):
     ok = np.isfinite(x) & np.isfinite(y)
     return spearmanr(x[ok], y[ok]).statistic if ok.sum() > 5 else np.nan
 
+def _perm_space(sub, chrom_col="chr"):
+    """Number of distinct circular shifts available across chromosomes.
+
+    Circular shifting can only produce prod(chromosome sizes) arrangements. A
+    small stratum spread thinly over many chromosomes leaves almost nothing to
+    shuffle -- most draws reproduce near-identical data, the observed statistic
+    is matched almost every time, and the p-value saturates at 1. That is a
+    resolution failure, not a null result, so it must be reported as NA.
+    """
+    return float(np.prod(sub[chrom_col].value_counts().values.astype(float)))
+
 
 def _block_idx(idx, blk, rng):
     n = len(idx)
@@ -200,6 +211,8 @@ def stratified_bootstrap(dfA, dfB, xcol, ycol, zcol, blk, n_boot, partial, seed)
 def block_permutation_p(df, xcol, ycol, zcol, blk, n_perm, partial, seed,
                         chrom_col="chr"):
     """Circular block shift of y within chromosome; preserves autocorrelation."""
+    if _perm_space(df, chrom_col) < 10 * n_perm:
+        return np.nan
     rng = np.random.default_rng(seed)
     obs = _rho(df, xcol, ycol, zcol, partial)
     if not np.isfinite(obs):
@@ -262,6 +275,8 @@ def group_delta_perm(sub, xcol, ycol, mask, n_perm, seed, chrom_col="chr"):
     obs = cliffs_delta(y[m], y[~m])
     if not np.isfinite(obs):
         return np.nan, np.nan
+    if _perm_space(sub, chrom_col) < 10 * n_perm:
+        return obs, np.nan          # effect size stands; p is not evaluable
     rng = np.random.default_rng(seed)
     groups = [sub.index.get_indexer(g.index) for _, g in sub.groupby(chrom_col, sort=False)]
     ge = 0
@@ -522,7 +537,8 @@ def main():
             for dirn, sym in (("loss", "<"), ("gain", ">")):
                 dv = r[f"delta_{dirn}_{tag}"]; dp = r[f"p_delta_{dirn}_{tag}"]
                 if np.isfinite(dv):
-                    dps = ("< 5e-4" if dp <= 1.0 / (a.n_perm + 1) + 1e-12
+                    dps = ("not evaluable" if not np.isfinite(dp)
+                           else "< 5e-4" if dp <= 1.0 / (a.n_perm + 1) + 1e-12
                            else f"= {dp:.2g}")
                     extra += (f"\n$\\delta$ (x {sym} {'-' if dirn=='loss' else '+'}"
                               f"{a.effect_cut:g}) = {dv:+.2f}, $P$ {dps}"
