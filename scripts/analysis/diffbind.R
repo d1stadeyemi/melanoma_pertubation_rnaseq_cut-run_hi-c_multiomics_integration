@@ -1,5 +1,5 @@
 # =============================================================================
-# diffbind.R — Peak-based differential binding for PUNCTATE histone marks
+# diffbind.R — Peak-based differential binding for punctate histone marks
 # =============================================================================
 #
 # PROJECT: A375 melanoma parental-vs-B10 constricted-migration multi-omics.
