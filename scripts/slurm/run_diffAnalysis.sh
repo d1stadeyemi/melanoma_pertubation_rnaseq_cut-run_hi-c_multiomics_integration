@@ -27,19 +27,19 @@ conda activate multiomics-r
 #    --chain data/processed/greenlist/hg38ToHg19.over.chain.gz
 
 # Run differential analysis per mark/contrast:
-Rscript scripts/analysis/csaw.R \
-    --sheet data/processed/sample_sheet.csv \
-    --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc \
-    --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
-    --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
-    --spikein sheet --filter_mode group_aware \
-    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
-    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
-    --genes data/processed/GeneListTSShg19_cleaned.txt \
-    --greenlist data/processed/greenlist/greenlist_hg19.bed \
-    --peaks sheet --baseline_group "B10|DMSO" \
-    --bigwig
-#     --fragment_qc --replicate_scatter 
+# Rscript scripts/analysis/csaw.R \
+#     --sheet data/processed/sample_sheet.csv \
+#     --outdir results/exploratory/diff_analysis/csaw/Migrated_Parunc \
+#     --mark migrated --group1 "Parental|UNC" --group2 "Parental|DMSO" \
+#     --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
+#     --spikein sheet --filter_mode group_aware \
+#     --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+#     --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
+#     --genes data/processed/GeneListTSShg19_cleaned.txt \
+#     --greenlist data/processed/greenlist/greenlist_hg19.bed \
+#     --peaks sheet --baseline_group "B10|DMSO" \
+#     --bigwig
+#     --fragment_qc --replicate_scatter
 # Default: --test contrast
 
 #Rscript scripts/analysis/csaw.R \
@@ -84,7 +84,7 @@ Rscript scripts/analysis/csaw.R \
 #     --greenlist data/processed/greenlist/greenlist_hg19.bed \
 #     --peaks sheet --baseline_group "Parental|DMSO" \
 #     --bigwig
-#     --fragment_qc --replicate_scatter 
+#     --fragment_qc --replicate_scatter
 # Default: --test contrast
 
 # Rscript scripts/analysis/csaw.R \
@@ -120,7 +120,7 @@ Rscript scripts/analysis/csaw.R \
 #     --genes data/processed/GeneListTSShg19_cleaned.txt \
 #     --greenlist data/processed/greenlist/greenlist_hg19.bed \
 #     --bigwig
-#     --peaks sheet --fragment_qc --replicate_scatter 
+#     --peaks sheet --fragment_qc --replicate_scatter
 
 # Rscript scripts/analysis/csaw.R \
 #     --sheet data/processed/sample_sheet.csv \
@@ -133,7 +133,19 @@ Rscript scripts/analysis/csaw.R \
 #     --genes data/processed/GeneListTSShg19_cleaned.txt \
 #     --greenlist data/processed/greenlist/greenlist_hg19.bed \
 #     --bigwig
-#     --peaks sheet --fragment_qc --replicate_scatter 
+#     --peaks sheet --fragment_qc --replicate_scatter
+
+Rscript scripts/analysis/csaw.R \
+    --sheet data/processed/sample_sheet.csv \
+    --outdir results/exploratory/diff_analysis/csaw/Migrated_B8unc_vs_Pardmso \
+    --mark migrated --group1 "B8|UNC" --group2 "Parental|DMSO" \
+    --norm background,spikein,sf,greenlist --window 1000,2000,5000 \
+    --spikein sheet --filter_mode group_aware \
+    --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
+    --normfactors data/processed/spikefree/H3K27Me3_migrated/migrated_normfactors.csv \
+    --genes data/processed/GeneListTSShg19_cleaned.txt \
+    --greenlist data/processed/greenlist/greenlist_hg19.bed \
+    --bigwig
 
 # Rscript scripts/analysis/csaw.R \
 #     --sheet data/processed/sample_sheet.csv \
@@ -159,7 +171,7 @@ Rscript scripts/analysis/csaw.R \
 #     --genes data/processed/GeneListTSShg19_cleaned.txt \
 #     --greenlist data/processed/greenlist/greenlist_hg19.bed \
 #     --bigwig
-#     --peaks sheet --fragment_qc --replicate_scatter 
+#     --peaks sheet --fragment_qc --replicate_scatter
 
 # Run differential analysis per mark/interaction:
 #Rscript scripts/analysis/csaw.R \
@@ -200,7 +212,7 @@ Rscript scripts/analysis/csaw.R \
 #     --blacklist data/processed/greenlist/hg19-blacklist.v2.bed \
 #     --normfactors data/processed/spikefree/epz/H3K27me3_normfactors.csv \
 #     --greenlist data/processed/greenlist/greenlist_hg19.bed \
-#     --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter 
+#     --peaks sheet --baseline_group "B10|DMSO" --replicate_scatter
 
 # Rscript scripts/analysis/csaw.R \
 #     --sheet data/processed/sample_sheet_epz.csv \

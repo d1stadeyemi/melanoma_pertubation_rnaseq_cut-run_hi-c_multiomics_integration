@@ -22,7 +22,7 @@ python scripts/preprocessing/extract_bigwig_signal.py \
     data/processed/coordinates_250kb_bins.bed \
     --bw data/processed/mean_bigwigs/*.mean.bw \
     --output_dir data/processed \
-    --output_file cut_run_signal_table_250kb.txt \
-    --log2 
+    --output_file cut_run_signal_table_250kb_temp.txt 
+#    --log2
 
 conda deactivate

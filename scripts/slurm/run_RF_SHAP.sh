@@ -17,7 +17,8 @@ module load anaconda3/2024.06
 source $ANACONDA3_SH
 
 HIC="data/processed/A375-CompartmentsAcrossConditions.txt"
-CUTRUN="data/processed/cut_run_signal_table_250kb.txt"
+#CUTRUN="data/processed/cut_run_signal_table_250kb.txt"
+CUTRUN="data/processed/cut_run_signal_table_250kb_temp.txt"
 FIGS="results/exploratory"
 
 conda activate multiomics-ml
@@ -27,8 +28,9 @@ echo " Epigenetic priming"
 echo "=========================================="
 python scripts/analysis/RF_SHAP.py \
     $CUTRUN $HIC \
-    --outdir $FIGS/RF_SHAP_both \
+    --outdir $FIGS/RF_SHAP_both_temp \
     --comparison both \
+    --stats mean \
     --model rf
 # --shap_dependence_partners H3K27me3_mean:H3K27Ac_mean H3K9me3_mean:H3K4me1_mean H3K27me3_mean:H3K4me1_mean H3K27me3_mean:H3K9me3_mean \
 
