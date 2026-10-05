@@ -28,9 +28,10 @@ echo " Epigenetic priming"
 echo "=========================================="
 python scripts/analysis/RF_SHAP.py \
     $CUTRUN $HIC \
-    --outdir $FIGS/RF_SHAP_both_temp \
+    --outdir $FIGS/RF_SHAP_both_temp2 \
     --comparison both \
     --stats mean \
+    --marks H3K27me3 H3K27Ac H3K4me1 H3K9me3 H3K9ac \
     --model rf
 # --shap_dependence_partners H3K27me3_mean:H3K27Ac_mean H3K9me3_mean:H3K4me1_mean H3K27me3_mean:H3K4me1_mean H3K27me3_mean:H3K9me3_mean \
 
