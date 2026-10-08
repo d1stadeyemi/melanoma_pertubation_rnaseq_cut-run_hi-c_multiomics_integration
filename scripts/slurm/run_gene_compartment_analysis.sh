@@ -20,8 +20,8 @@ conda activate multiomics-py
 
 python scripts/analysis/gene_compartment_analysis_4.py \
         --step1   results/exploratory/gene_compartment/Step1_bin_gene_density.txt \
-        --cutrun  data/processed/cut_run_signal_table_250kb.eps_fixed.txt \
+        --cutrun  data/processed/cut_run_signal_table_250kb_temp.txt \
         --step3   results/exploratory/gene_compartment/Step3_gene_expression_joined.txt \
-        --outdir  results/exploratory/gene_compartment/Step4_eps_fixed_mark_change
+        --outdir  results/exploratory/gene_compartment_temp
 
 conda deactivate
