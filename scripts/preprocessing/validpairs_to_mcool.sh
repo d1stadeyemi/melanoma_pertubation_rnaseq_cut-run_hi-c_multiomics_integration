@@ -2,7 +2,7 @@
 #SBATCH --job-name=vp2mcool
 #SBATCH --account=ACF-UTK0009
 #SBATCH --partition=condo-rmccord
-#SBATCH --qos=condo
+#SBATCH --qos=condo-
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -15,14 +15,8 @@
 # ICE-balanced .mcool with cooler.
 #
 # Usage (submit from the project root):
-#   sbatch --job-name=mcool_B10_DMSO scripts/validpairs_to_mcool.sh \
+#   sbatch --job-name=mcool_B10_DMSO scripts/preprocessing/validpairs_to_mcool.sh \
 #       <sample_name> <path/to/sample.allValidPairs> [min_mapq=0] [base_res=10000]
-#
-# Example:
-# M=data/processed/hic/hic_validpairs_manifest.tsv # manifest file of allValidPairs for every sample
-# echo "$M"; ls -l "$M"
-# VP=$(awk '$1=="B10_DMSO"{print $2}' "$M"); echo "$VP"   # should print the full path
-# sbatch --job-name=mcool_B10_DMSO scripts/preprocessing/validpairs_to_mcool.sh B10_DMSO "$VP" 0
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -45,8 +39,15 @@ OUTDIR="data/processed/hic/mcool"
 WORKDIR="${OUTDIR}/tmp_${SAMPLE}_${SLURM_JOB_ID:-local}"   # on Lustre, not node /tmp
 mkdir -p "$OUTDIR" "$WORKDIR" logs
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$CONDA_ENV"
+# Use the env already active in the submitting shell; otherwise try to activate it.
+if [[ "${CONDA_DEFAULT_ENV:-}" != "$CONDA_ENV" && "${CONDA_PREFIX:-}" != *"/$CONDA_ENV" ]]; then
+    if command -v conda >/dev/null 2>&1; then
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+        conda activate "$CONDA_ENV"
+    else
+        echo "ERROR: conda not found. Run 'conda activate $CONDA_ENV' before sbatch." >&2; exit 1
+    fi
+fi
 
 echo "[$(date)] sample=$SAMPLE base=$BASE_RES res=$RESOLUTIONS mapq>=$MIN_MAPQ"
 echo "pairs: $VALIDPAIRS"
