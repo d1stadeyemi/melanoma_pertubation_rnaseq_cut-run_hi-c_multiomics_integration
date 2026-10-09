@@ -2,6 +2,7 @@
 #SBATCH --job-name=hic_cnv
 #SBATCH --account=ACF-UTK0009
 #SBATCH --partition=condo-rmccord
+#SBATCH --qos=condo
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2

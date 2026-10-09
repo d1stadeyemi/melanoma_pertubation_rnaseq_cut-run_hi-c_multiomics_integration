@@ -75,6 +75,9 @@ INK = "#0b0b0b"
 INK_2 = "#52514e"
 SURFACE = "#fcfcfb"
 BAND = "#f0efec"
+# shared with rnaseq_cnv_shift.py so the two figures read the same way
+LOSS_TINT, LOSS_ALPHA = "#4a3aa7", 0.13   # violet = copy loss in B10
+GAIN_TINT, GAIN_ALPHA = "#eda100", 0.22   # yellow = copy gain in B10
 
 
 def log(msg: str) -> None:
@@ -229,7 +232,7 @@ def plot_genome(bins, valid, tracks, null_tracks, seg, outprefix, title):
         cum += L
     gx = bins["chrom"].map(offsets).to_numpy(dtype=float) + (bins["start"].to_numpy() + bins["end"].to_numpy()) / 2
 
-    n_panels = len(tracks) + (1 if null_tracks else 0)
+    n_panels = len(tracks) + len(null_tracks)
     fig, axes = plt.subplots(n_panels, 1, figsize=(15, 2.6 * n_panels), sharex=True,
                              facecolor=SURFACE)
     axes = np.atleast_1d(axes)
@@ -250,7 +253,9 @@ def plot_genome(bins, valid, tracks, null_tracks, seg, outprefix, title):
     altered = seg[seg["call"] != "neutral"]
     for ax, (i, (label, vals)) in zip(axes, enumerate(tracks.items())):
         for r in altered.itertuples():
-            ax.axvspan(offsets[r.chrom] + r.start, offsets[r.chrom] + r.end, color=BAND, zorder=0)
+            ax.axvspan(offsets[r.chrom] + r.start, offsets[r.chrom] + r.end, lw=0, zorder=0,
+                       color=GAIN_TINT if r.call == "gain" else LOSS_TINT,
+                       alpha=GAIN_ALPHA if r.call == "gain" else LOSS_ALPHA)
         y = np.clip(vals, -ylim, ylim)
         ax.scatter(gx[valid], y[valid], s=2, color=SERIES[i % len(SERIES)], alpha=0.5,
                    linewidths=0, rasterized=True)
@@ -259,21 +264,31 @@ def plot_genome(bins, valid, tracks, null_tracks, seg, outprefix, title):
             if np.isfinite(m):
                 ax.plot([offsets[r.chrom] + r.start, offsets[r.chrom] + r.end], [m, m],
                         color=INK, lw=2, solid_capstyle="round")
-        decorate(ax, f"{label}  (test pair; shaded = called CNV difference)")
+        decorate(ax, f"{label}  (test: B10 vs Parental)")
 
-    if null_tracks:
-        ax = axes[-1]
-        for label, vals in null_tracks.items():
-            y = np.clip(vals, -ylim, ylim)
-            ax.scatter(gx[valid], y[valid], s=2, color=NULL_COLOR, alpha=0.4, linewidths=0,
-                       rasterized=True)
-        decorate(ax, "Null pairs (same cells, acute treatment) — should be flat: "
-                 + ", ".join(null_tracks))
+    # one panel per null pair: same cells, acute treatment -> should be flat,
+    # including inside the CNV segments called from the test pairs (shaded)
+    for ax, (label, vals) in zip(axes[len(tracks):], null_tracks.items()):
+        for r in altered.itertuples():
+            ax.axvspan(offsets[r.chrom] + r.start, offsets[r.chrom] + r.end, lw=0, zorder=0,
+                       color=GAIN_TINT if r.call == "gain" else LOSS_TINT,
+                       alpha=GAIN_ALPHA if r.call == "gain" else LOSS_ALPHA)
+        y = np.clip(vals, -ylim, ylim)
+        ax.scatter(gx[valid], y[valid], s=2, color=NULL_COLOR, alpha=0.45, linewidths=0,
+                   rasterized=True)
+        for r in seg.itertuples():
+            idx = np.arange(r.first_bin, r.last_bin + 1)
+            idx = idx[valid[idx]]
+            if idx.size:
+                ax.plot([offsets[r.chrom] + r.start, offsets[r.chrom] + r.end],
+                        [np.mean(vals[idx])] * 2, color=INK, lw=2, solid_capstyle="round")
+        decorate(ax, f"{label}  (null: same cells, UNC vs DMSO - should be flat)")
 
     axes[-1].set_xticks(mids)
     axes[-1].set_xticklabels([c.replace("chr", "") for c in chroms], fontsize=8, color=INK_2)
     axes[-1].set_xlim(0, cum)
-    fig.suptitle(title, x=0.01, ha="left", color=INK, fontsize=12)
+    fig.suptitle(title + " - black: segment mean; shading: CNV calls (violet loss, yellow gain)",
+                 x=0.01, ha="left", color=INK, fontsize=12)
     fig.tight_layout()
     for ext in ("png", "pdf"):
         fig.savefig(f"{outprefix}.{ext}", dpi=200, facecolor=SURFACE)
@@ -514,7 +529,7 @@ def main() -> None:
     log("plotting")
     plot_genome(bins, valid, test_tracks, null_tracks, seg,
                 os.path.join(args.outdir, "cnv_genome"),
-                f"Hi-C coverage ratio — differential copy number ({args.resolution // 1000} kb bins)")
+                f"Hi-C coverage ratio ({args.resolution // 1000} kb bins)")
     log(f"done -> {args.outdir}")
     print(open(os.path.join(args.outdir, "cnv_summary.txt")).read())
 
