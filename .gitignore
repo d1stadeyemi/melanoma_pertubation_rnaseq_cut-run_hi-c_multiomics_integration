@@ -10,6 +10,7 @@ data/refs/**
 slurm-*.out
 
 # Logs
+*.log
 logs/**
 !logs/.gitkeep
 
@@ -69,4 +70,5 @@ test/
 temp/
 
 .cache/
+.cache*/
 data/.cache/
