@@ -11,7 +11,7 @@
 #SBATCH --error=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/errors/%x-%j.err
 #SBATCH --output=/lustre/isaac24/proj/UTK0009/RNA-Seq/logs/jobs/%x-%j.out
 
-# Fail fast: exit on error, undefined variable, or any failed command in a pipe
+# Fail fast; exit on error, undefined variable, or any failed command in a pipe
 set -euo pipefail
 
 ###############################################################################
