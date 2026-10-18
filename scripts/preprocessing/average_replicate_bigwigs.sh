@@ -74,7 +74,7 @@
 #
 # OUTPUT: one <Condition>[_<Treatment>]_<Factor>.mean.bw per group in --outdir,
 #   plus a groups.tsv recording which input bigWigs went into each average
-#   (provenance for the methods section).
+#   (provenance for the methods section)
 # =============================================================================
 
 module load anaconda3/2024.06
