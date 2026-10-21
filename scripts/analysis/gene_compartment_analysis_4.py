@@ -97,7 +97,7 @@ SWITCH_COLORS = {"B_to_A": "#C0392B", "A_to_B": "#1A5276",
 SWITCH_LABELS = {"B_to_A": "B\u2192A (Activated)", "A_to_B": "A\u2192B (Silenced)",
                  "Stable_A": "Stable A", "Stable_B": "Stable B"}
 CAT_ORDER = ["Stable_A", "A_to_B", "B_to_A", "Stable_B"]
-DEFAULT_MARKS = ("H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3")
+DEFAULT_MARKS = ("H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3", "H3K9ac")
 
 # Biological direction of each mark, used by Step 4c to ORIENT concordance so
 # that "activating concordance" always sorts into one file regardless of mark.

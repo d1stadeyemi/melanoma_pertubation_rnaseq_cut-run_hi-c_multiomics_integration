@@ -18,10 +18,25 @@ source $ANACONDA3_SH
 
 conda activate multiomics-py
 
+python scripts/analysis/gene_compartment_analysis_1.py \
+        --pc1       data/processed/merged_hic_rnaseq_cutrun_parent_bottom10.txt \
+        --gene_list data/processed/GeneListTSShg19_cleaned.txt \
+        --outdir    results/exploratory/gene_compartment_temp
+
+python scripts/analysis/gene_compartment_analysis_2.py \
+        --step1  results/exploratory/gene_compartment_temp/Step1_bin_gene_density.txt \
+        --outdir results/exploratory/gene_compartment_temp
+
+python scripts/analysis/gene_compartment_analysis_3.py \
+        --step1     results/exploratory/gene_compartment_temp/Step1_bin_gene_density.txt \
+        --gene_list data/processed/GeneListTSShg19_cleaned.txt \
+        --deseq2    data/processed/GeneExpressionComparisons_parentvsBottom10_orig.txt \
+        --outdir    results/exploratory/gene_compartment_temp
+
 python scripts/analysis/gene_compartment_analysis_4.py \
-        --step1   results/exploratory/gene_compartment/Step1_bin_gene_density.txt \
+        --step1   results/exploratory/gene_compartment_temp/Step1_bin_gene_density.txt \
         --cutrun  data/processed/cut_run_signal_table_250kb_temp.txt \
-        --step3   results/exploratory/gene_compartment/Step3_gene_expression_joined.txt \
+        --step3   results/exploratory/gene_compartment_temp/Step3_gene_expression_joined.txt \
         --outdir  results/exploratory/gene_compartment_temp
 
 conda deactivate
