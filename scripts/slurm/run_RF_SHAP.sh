@@ -36,12 +36,12 @@ echo "=========================================="
 # --shap_dependence_partners H3K27me3_mean:H3K27Ac_mean H3K9me3_mean:H3K4me1_mean H3K27me3_mean:H3K4me1_mean H3K27me3_mean:H3K9me3_mean \
 
 # Permutation test for RF and SHAP significance
-python scripts/analysis/RF_permutation_test.py \
-   $FIGS/RF_SHAP_both_temp2/baseline/Switch_classified.txt \
-   --outdir $FIGS/RF_SHAP_both_temp2/baseline_permutation_2000_test \
-   --comparison both \
-   --model rf \
-   --n_perm 2000
+# python scripts/analysis/RF_permutation_test.py \
+#    $FIGS/RF_SHAP_both_temp2/baseline/Switch_classified.txt \
+#    --outdir $FIGS/RF_SHAP_both_temp2/baseline_permutation_2000_test \
+#    --comparison both \
+#    --model rf \
+#    --n_perm 2000
 
 # Control analyses
 python scripts/analysis/RF_SHAP_controls.py \

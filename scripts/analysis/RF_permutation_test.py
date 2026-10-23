@@ -144,7 +144,7 @@ COMPARISON_SPEC = {
 # prefix and optional CTCF. We detect columns of the form:
 #     <mark>_<stat>        (baseline, e.g. H3K27me3_mean)
 #     d_<mark>_<stat>      (dynamics, e.g. d_H3K27me3_mean)
-KNOWN_MARKS = ("H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3", "CTCF")
+KNOWN_MARKS = ("H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3", "H3K9ac", "CTCF")
 KNOWN_STATS = ("mean", "max", "std", "coverage")
 
 
@@ -410,7 +410,7 @@ def _draw_null_panel(ax, null_arr, observed, prev_for_random, p_emp,
                label=random_label)
     ax.set_xlabel(f"{metric_label} (5-fold CV)", labelpad=6)
     ax.set_ylabel("Permutations", labelpad=6)
-    
+
     # Format p: at the permutation floor (observed beat all shuffles) the value
     # is censored, so report it as an inequality (Phipson & Smyth 2010; North
     # et al. 2002) rather than a spuriously precise decimal. Above the floor,

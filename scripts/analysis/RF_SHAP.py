@@ -148,7 +148,7 @@ COMPARISON_SPEC = {
           "label": "Stable_B vs B\u2192A", "short": "compB"},
 }
 
-DEFAULT_MARKS = ("H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3")
+DEFAULT_MARKS = ("H3K27me3", "H3K27Ac", "H3K4me1", "H3K9me3", "H3K9ac")
 DEFAULT_STATS = ("mean", "max", "std", "coverage")
 # Tokens that indicate a column belongs to a non-baseline track. Any column
 # whose name contains one of these is rejected as a feature.
@@ -230,7 +230,7 @@ def parse_args():
     # Feature configuration ---------------------------------------------------
     p.add_argument("--marks", nargs="+", default=list(DEFAULT_MARKS),
                    help="Histone marks to use as features (default: H3K27me3 "
-                        "H3K27Ac H3K4me1 H3K9me3).")
+                        "H3K27Ac H3K4me1 H3K9me3 H3K9ac).")
     p.add_argument("--stats", nargs="+", default=None,
                    choices=list(DEFAULT_STATS),
                    help="Stat suffixes to use as features. Default: all stats "
