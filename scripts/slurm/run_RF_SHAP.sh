@@ -26,36 +26,36 @@ conda activate multiomics-ml
 echo "=========================================="
 echo " Epigenetic priming"
 echo "=========================================="
-python scripts/analysis/RF_SHAP.py \
-    $CUTRUN $HIC \
-    --outdir $FIGS/RF_SHAP_both_temp2 \
-    --comparison both \
-    --stats mean \
-    --marks H3K27me3 H3K27Ac H3K4me1 H3K9me3 H3K9ac \
-    --model rf
+# python scripts/analysis/RF_SHAP.py \
+#     $CUTRUN $HIC \
+#     --outdir $FIGS/RF_SHAP_both_temp2 \
+#     --comparison both \
+#     --stats mean \
+#     --marks H3K27me3 H3K27Ac H3K4me1 H3K9me3 H3K9ac \
+#     --model rf
 # --shap_dependence_partners H3K27me3_mean:H3K27Ac_mean H3K9me3_mean:H3K4me1_mean H3K27me3_mean:H3K4me1_mean H3K27me3_mean:H3K9me3_mean \
 
 # Permutation test for RF and SHAP significance
-#python scripts/analysis/RF_permutation_test.py \
-#    $FIGS/RF_SHAP_both/baseline/Switch_classified.txt \
-#    --outdir $FIGS/RF_SHAP_both/baseline_permutation_2000_test \
-#    --comparison both \
-#    --model rf \
-#    --n_perm 2000
+python scripts/analysis/RF_permutation_test.py \
+   $FIGS/RF_SHAP_both_temp2/baseline/Switch_classified.txt \
+   --outdir $FIGS/RF_SHAP_both_temp2/baseline_permutation_2000_test \
+   --comparison both \
+   --model rf \
+   --n_perm 2000
 
 # Control analyses
-# python scripts/analysis/RF_SHAP_controls.py \
-#    $CUTRUN $HIC \
-#    --outdir $FIGS/RF_SHAP_both/controls \
-#    --comparison both \
-#    --model rf
+python scripts/analysis/RF_SHAP_controls.py \
+   $CUTRUN $HIC \
+   --outdir $FIGS/RF_SHAP_both_temp2/controls \
+   --comparison both \
+   --model rf
 
 conda deactivate
 
 #conda activate multiomics-r
 
 #Rscript scripts/analysis/PLSDA.R \
-#    $FIGS/RF_SHAP_both/baseline/Switch_classified.txt \
+#    $FIGS/RF_SHAP_both_temp2/baseline/Switch_classified.txt \
 #    $FIGS/PLSDA
 
 #conda deactivate
